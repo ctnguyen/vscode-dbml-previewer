@@ -1,3 +1,85 @@
+<!-- FORK-ONLY -- DELETE THIS WHOLE SECTION (down to END FORK-ONLY) BEFORE SYNCING WITH UPSTREAM -->
+
+> ## ⚠️ Fork working notes — temporary, delete me
+>
+> **This section only exists on this fork.** It lives in the last commit of the local branch
+> (`local/fork-identity`) and nowhere else: it is not on `main`, and it is deliberately kept out of
+> the branch that goes upstream. It is a scratch note for me while the pull request is open —
+> when the work is merged, this section is deleted along with the rest of the local-only commit.
+>
+> ### How the commits are organised
+>
+> The work was arranged in three chunks. **Chunk 1 is done**: the upstream author merged it and
+> released it as v1.6.1, `main` here is synced with that, and those commits are no longer part of
+> this branch. What is left on top of `main` is chunk 2 followed by chunk 3.
+>
+> **Chunk 1 — fix the broken 1.6.0 build** (3 commits, prefix `Fix :`) — ✅ merged upstream, in v1.6.1
+>
+> The published 1.6.0 rendered nothing and the webview reported
+> `React Error: (0 , tu.jsxDEV) is not a function`. Three independent defects: the production
+> webview bundle was compiled with Babel's *development* JSX transform while React's *production*
+> JSX runtime was bundled, so every JSX call site called an `undefined` function; `onNodeClick`
+> referenced `handleColumnClick` in its dependency array before that function was declared, so the
+> first render threw and unmounted the whole diagram; and a column used as both the source and the
+> target of relationships only kept one handle pair, so some relationships had nowhere to attach.
+>
+> **Chunk 2 — editable relationship edges** (5 commits, prefix `Edge Feature :`) — pull request open
+>
+> Brings the diagram closer to how dbdiagram.io behaves. Relationships are drawn as orthogonal
+> routes and can be reshaped by hand:
+>
+> - **Endpoint sides.** Each end of a relationship picks the table side (left or right) that faces
+>   its partner, instead of always leaving on the right and arriving on the left. The side can be
+>   overridden by dragging the endpoint to the other side of the table or via right-click, and a
+>   route that clearly favours the opposite side flips automatically.
+> - **Editable routes.** A route is a chain of straight segments — by default at most three
+>   (horizontal, vertical, horizontal), or a single one when both ends line up. Hovering highlights
+>   the route and shows its note; a single click enters edit mode, and any click away leaves it. In
+>   edit mode a segment can be dragged sideways to move it, or grabbed near its middle to split it
+>   in two at the 50% mark. Neighbouring segments that end up aligned merge back together on their
+>   own, and each relationship has its own reset control to return to the automatic route.
+> - **Relationship symbols.** Crow's-foot and bar symbols are drawn inset from each endpoint on the
+>   continuous line, so cardinality is readable without labels cluttering the diagram.
+> - **Persistence.** Hand-edited routes are stored alongside table positions in the existing
+>   `<file>.dbml.layout.json` sidecar, under a versioned, additive `edges` key. Routes are keyed by
+>   the tables and columns they connect rather than by the order the `Ref`s appear in the file, so
+>   reordering or inserting a `Ref` does not throw the edits away. Older sidecar files stay
+>   readable, and files written by this build stay readable by the released extension.
+>
+> **Chunk 3 — local build only** (1 commit, the one carrying this note) — never leaves this fork
+>
+> Everything needed to build and run this locally *without* fighting the released extension, and
+> nothing that belongs upstream. It renames the extension to a fork identity
+> (`ctnguyen.dbml-previewer-plus`, "DBML Previewer Plus") with its own command ids, context key,
+> webview panel types and `dbmlPreviewerPlus.*` settings namespace, and drops the
+> `ctrl+shift+d` keybinding, so the local build installs and runs side by side with the
+> marketplace one. It also carries the mocha unit-test harness and turns editable edge routing on
+> by default. This commit is fine to push to a remote branch, but it must never be part of the
+> pull request and must never reach `main`.
+>
+> ### Where this is going
+>
+> Chunk 1 is merged and released. The open pull request to the upstream author covers chunk 2.
+> Once that is merged too, I sync this fork's `main` with upstream, drop chunk 3 together with this
+> section, uninstall the local build and go back to installing the author's release.
+>
+> ### The commits, in order
+>
+> Numbered from `main` as it stands today; commit 1 is the first commit after it. Hashes are left
+> out on purpose — these commits get rebased. The chunk 1 commits are not listed: they are in
+> `main` now.
+>
+> | # | Commit | Chunk |
+> |---|--------|-------|
+> | 1 | Edge Feature : choose each endpoint's table side by partner direction | 2 — edge customization |
+> | 2 | Edge Feature : persist relationship routes in a versioned sidecar | 2 — edge customization |
+> | 3 | Edge Feature : edit relationship routes by sliding and splitting segments | 2 — edge customization |
+> | 4 | Edge Feature : draw crow's-foot / bar symbols inset from each endpoint | 2 — edge customization |
+> | 5 | Edge Feature : override an endpoint's side by drag or right-click | 2 — edge customization |
+> | 6 | Add fork identity, settings namespace, and unit-test harness for local install | 3 — local build only |
+
+<!-- END FORK-ONLY -->
+
 # DBML Previewer
 
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-blue)](https://marketplace.visualstudio.com/items?itemName=rizkykurniawan.dbml-previewer)

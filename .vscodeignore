@@ -22,3 +22,8 @@ agent/**
 .DS_Store
 .git/**
 demo.mp4
+DBMLPreviewerCustom*.md
+*.dbdiagram
+**/*.dbml.layout.json
+.claude/**
+scratch_index.js

@@ -1,9 +1,9 @@
 {
-  "name": "dbml-previewer",
-  "displayName": "DBML Previewer",
+  "name": "dbml-previewer-plus",
+  "displayName": "DBML Previewer Plus",
   "description": "Transform DBML files into interactive visual database diagrams with drag-and-drop tables, relationship tooltips, multi-schema support, and real-time preview updates",
   "version": "1.6.1",
-  "publisher": "rizkykurniawan",
+  "publisher": "ctnguyen",
   "author": {
     "name": "Rizky Kurniawan",
     "email": "contact.rizkykurniawan@gmail.com"
@@ -50,36 +50,36 @@
   "contributes": {
     "commands": [
       {
-        "command": "dbml-previewer.preview",
+        "command": "dbml-previewer-plus.preview",
         "title": "Preview DBML",
         "category": "DBML Previewer",
         "icon": "$(open-preview)"
       },
       {
-        "command": "dbml-previewer.previewFromExplorer",
+        "command": "dbml-previewer-plus.previewFromExplorer",
         "title": "Preview DBML",
         "category": "DBML Previewer"
       },
       {
-        "command": "dbml-previewer.exportToPNG",
+        "command": "dbml-previewer-plus.exportToPNG",
         "title": "Export Diagram to PNG",
         "category": "DBML Previewer",
         "icon": "$(device-camera)"
       },
       {
-        "command": "dbml-previewer.exportToSVG",
+        "command": "dbml-previewer-plus.exportToSVG",
         "title": "Export Diagram to SVG",
         "category": "DBML Previewer",
         "icon": "$(file-media)"
       },
       {
-        "command": "dbml-previewer.bulkExportToPNG",
+        "command": "dbml-previewer-plus.bulkExportToPNG",
         "title": "Bulk Export DBML Files to PNG",
         "category": "DBML Previewer",
         "icon": "$(export)"
       },
       {
-        "command": "dbml-previewer.bulkExportToSVG",
+        "command": "dbml-previewer-plus.bulkExportToSVG",
         "title": "Bulk Export DBML Files to SVG",
         "category": "DBML Previewer",
         "icon": "$(export)"
@@ -88,74 +88,68 @@
     "menus": {
       "explorer/context": [
         {
-          "command": "dbml-previewer.previewFromExplorer",
+          "command": "dbml-previewer-plus.previewFromExplorer",
           "when": "resourceExtname == .dbml",
           "group": "navigation"
         },
         {
-          "command": "dbml-previewer.bulkExportToPNG",
+          "command": "dbml-previewer-plus.bulkExportToPNG",
           "when": "explorerResourceIsFolder",
           "group": "navigation"
         },
         {
-          "command": "dbml-previewer.bulkExportToSVG",
+          "command": "dbml-previewer-plus.bulkExportToSVG",
           "when": "explorerResourceIsFolder",
           "group": "navigation"
         }
       ],
       "editor/title": [
         {
-          "command": "dbml-previewer.preview",
+          "command": "dbml-previewer-plus.preview",
           "when": "resourceExtname == .dbml",
           "group": "navigation"
         }
       ],
       "editor/context": [
         {
-          "command": "dbml-previewer.preview",
+          "command": "dbml-previewer-plus.preview",
           "when": "resourceExtname == .dbml",
           "group": "navigation"
         }
       ],
       "commandPalette": [
         {
-          "command": "dbml-previewer.preview",
+          "command": "dbml-previewer-plus.preview",
           "when": "resourceExtname == .dbml"
         },
         {
-          "command": "dbml-previewer.previewFromExplorer",
+          "command": "dbml-previewer-plus.previewFromExplorer",
           "when": "false"
         },
         {
-          "command": "dbml-previewer.exportToPNG",
-          "when": "dbmlPreviewerActive"
+          "command": "dbml-previewer-plus.exportToPNG",
+          "when": "dbmlPreviewerPlusActive"
         },
         {
-          "command": "dbml-previewer.exportToSVG",
-          "when": "dbmlPreviewerActive"
+          "command": "dbml-previewer-plus.exportToSVG",
+          "when": "dbmlPreviewerPlusActive"
         },
         {
-          "command": "dbml-previewer.bulkExportToPNG"
+          "command": "dbml-previewer-plus.bulkExportToPNG"
         },
         {
-          "command": "dbml-previewer.bulkExportToSVG"
+          "command": "dbml-previewer-plus.bulkExportToSVG"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "dbml-previewer.preview",
-        "key": "ctrl+shift+d",
-        "mac": "cmd+shift+d",
-        "when": "resourceExtname == .dbml && editorTextFocus"
-      },
-      {
-        "command": "dbml-previewer.bulkExportToPNG",
+        "command": "dbml-previewer-plus.bulkExportToPNG",
         "key": "ctrl+shift+alt+e",
         "mac": "cmd+shift+alt+e"
       },
       {
-        "command": "dbml-previewer.bulkExportToSVG",
+        "command": "dbml-previewer-plus.bulkExportToSVG",
         "key": "ctrl+shift+alt+s",
         "mac": "cmd+shift+alt+s"
       }
@@ -176,12 +170,12 @@
     "configuration": {
       "title": "DBML Previewer",
       "properties": {
-        "diagram.inheritThemeStyle": {
+        "dbmlPreviewerPlus.inheritThemeStyle": {
           "type": "boolean",
           "default": false,
           "description": "Whether to inherit styling from the current VS Code theme. When disabled, uses a clean light theme optimized for diagram readability."
         },
-        "diagram.edgeType": {
+        "dbmlPreviewerPlus.edgeType": {
           "type": "string",
           "default": "smoothstep",
           "enum": [
@@ -196,46 +190,46 @@
           ],
           "description": "The type of edge/connection lines to use for table relationships in the diagram."
         },
-        "diagram.autoEndpointSide": {
+        "dbmlPreviewerPlus.autoEndpointSide": {
           "type": "boolean",
           "default": true,
           "description": "Automatically choose which side of each table a relationship connects to, so edges leave and enter on the side facing the related table. When disabled, edges always leave the right side and enter the left side."
         },
-        "diagram.relationshipMarkers": {
+        "dbmlPreviewerPlus.relationshipMarkers": {
           "type": "boolean",
           "default": true,
           "description": "Show entity-relationship markers on relationship edges: a crow's-foot on the many side and a bar on the one side."
         },
-        "diagram.editableEdgeRouting": {
+        "dbmlPreviewerPlus.editableEdgeRouting": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Allow editing relationship routes by dragging waypoints. When enabled, select or hover an edge to reveal draggable points and segment handles; drag a point to bend the edge, drag a segment to add a point, double-click a point to delete it. Saved routes are always rendered regardless of this setting."
         },
-        "diagram.showCardinalityLabels": {
+        "dbmlPreviewerPlus.showCardinalityLabels": {
           "type": "boolean",
           "default": false,
           "description": "Show cardinality labels on relationship edges in the diagram. 1 = one-side, * = many-side."
         },
-        "diagram.exportQuality": {
+        "dbmlPreviewerPlus.exportQuality": {
           "type": "number",
           "default": 0.95,
           "minimum": 0.1,
           "maximum": 1.0,
           "description": "Image quality for PNG exports (0.1 to 1.0). Higher values produce better quality but larger file sizes."
         },
-        "diagram.exportBackground": {
+        "dbmlPreviewerPlus.exportBackground": {
           "type": "boolean",
           "default": true,
           "description": "Include background in exported images. When disabled, exported images have a transparent background."
         },
-        "diagram.exportPadding": {
+        "dbmlPreviewerPlus.exportPadding": {
           "type": "number",
           "default": 20,
           "minimum": 0,
           "maximum": 100,
           "description": "Padding around the diagram in exported images (in pixels)."
         },
-        "diagram.bulkExport.outputFolder": {
+        "dbmlPreviewerPlus.bulkExport.outputFolder": {
           "type": "string",
           "default": "",
           "description": "Path to folder where bulk-exported PNG files will be saved. Relative paths resolve from workspace root. Leave empty to save into a 'dbml-exports' subfolder inside the source folder."
@@ -247,6 +241,7 @@
     "lint": "eslint .",
     "pretest": "npm run lint",
     "test": "vscode-test",
+    "test:unit": "mocha 'test-unit/**/*.test.js'",
     "check:prod-bundle": "node scripts/check-no-jsxdev.js",
     "build": "webpack --mode production && npm run check:prod-bundle",
     "watch": "webpack --mode development --watch",
@@ -277,8 +272,10 @@
     "@babel/core": "^8.0.1",
     "@babel/preset-env": "^8.0.2",
     "@babel/preset-react": "^8.0.1",
+    "@babel/register": "^8.0.6",
     "babel-loader": "^10.1.1",
     "css-loader": "^6.8.0",
+    "mocha": "^12.0.2",
     "style-loader": "^3.3.0"
   }
 }
