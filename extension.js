@@ -48,7 +48,7 @@ let bulkExportOutputDir = '';
  */
 function activate(context) {
 
-	const previewCommand = vscode.commands.registerCommand('dbml-previewer.preview', function () {
+	const previewCommand = vscode.commands.registerCommand('dbml-previewer-plus.preview', function () {
 		const activeEditor = vscode.window.activeTextEditor;
 
 		if (!activeEditor) {
@@ -68,7 +68,7 @@ function activate(context) {
 	});
 
 	// Register command to preview DBML from file explorer context menu
-	const previewFromExplorerCommand = vscode.commands.registerCommand('dbml-previewer.previewFromExplorer', function (uri) {
+	const previewFromExplorerCommand = vscode.commands.registerCommand('dbml-previewer-plus.previewFromExplorer', function (uri) {
 		if (!uri) {
 			vscode.window.showErrorMessage('No file selected');
 			return;
@@ -83,7 +83,7 @@ function activate(context) {
 	});
 
 	// Register export to PNG command
-	const exportToPNGCommand = vscode.commands.registerCommand('dbml-previewer.exportToPNG', function () {
+	const exportToPNGCommand = vscode.commands.registerCommand('dbml-previewer-plus.exportToPNG', function () {
 		if (!activePreviewPanel) {
 			vscode.window.showWarningMessage('No active DBML preview found. Please open a DBML preview first.');
 			return;
@@ -95,7 +95,7 @@ function activate(context) {
 	});
 
 	// Register export to SVG command
-	const exportToSVGCommand = vscode.commands.registerCommand('dbml-previewer.exportToSVG', function () {
+	const exportToSVGCommand = vscode.commands.registerCommand('dbml-previewer-plus.exportToSVG', function () {
 		if (!activePreviewPanel) {
 			vscode.window.showWarningMessage('No active DBML preview found. Please open a DBML preview first.');
 			return;
@@ -106,11 +106,11 @@ function activate(context) {
 		});
 	});
 
-	const bulkExportCommand = vscode.commands.registerCommand('dbml-previewer.bulkExportToPNG', function (uri) {
+	const bulkExportCommand = vscode.commands.registerCommand('dbml-previewer-plus.bulkExportToPNG', function (uri) {
 		runBulkExport(context, uri, 'png');
 	});
 
-	const bulkExportSvgCommand = vscode.commands.registerCommand('dbml-previewer.bulkExportToSVG', function (uri) {
+	const bulkExportSvgCommand = vscode.commands.registerCommand('dbml-previewer-plus.bulkExportToSVG', function (uri) {
 		runBulkExport(context, uri, 'svg');
 	});
 
@@ -173,7 +173,7 @@ function createPreviewPanel(context, filePath, content) {
 	const fileName = path.basename(filePath);
 
 	const panel = vscode.window.createWebviewPanel(
-		'dbmlPreview', // Panel type
+		'dbmlPreviewPlus', // Panel type
 		`Preview: ${fileName}`, // Panel title
 		vscode.ViewColumn.Beside, // Show beside current editor
 		{
@@ -187,15 +187,15 @@ function createPreviewPanel(context, filePath, content) {
 	activePreviewPanel = panel;
 
 	// Set context for command availability
-	vscode.commands.executeCommand('setContext', 'dbmlPreviewerActive', true);
+	vscode.commands.executeCommand('setContext', 'dbmlPreviewerPlusActive', true);
 
 	// Get configuration
-	const config = vscode.workspace.getConfiguration('diagram');
+	const config = vscode.workspace.getConfiguration('dbmlPreviewerPlus');
 	const inheritThemeStyle = config.get('inheritThemeStyle', true);
 	const edgeType = config.get('edgeType', 'smoothstep');
 	const autoEndpointSide = config.get('autoEndpointSide', true);
 	const relationshipMarkers = config.get('relationshipMarkers', true);
-	const editableEdgeRouting = config.get('editableEdgeRouting', false);
+	const editableEdgeRouting = config.get('editableEdgeRouting', true);
 	const showCardinalityLabels = config.get('showCardinalityLabels', false);
 	const exportQuality = config.get('exportQuality', 0.95);
 	const exportBackground = config.get('exportBackground', true);
@@ -228,12 +228,12 @@ function createPreviewPanel(context, filePath, content) {
 					break;
 				case 'getConfiguration':
 					// Send current configuration to webview
-					const currentConfig = vscode.workspace.getConfiguration('diagram');
+					const currentConfig = vscode.workspace.getConfiguration('dbmlPreviewerPlus');
 					const currentInheritThemeStyle = currentConfig.get('inheritThemeStyle', true);
 					const currentEdgeType = currentConfig.get('edgeType', 'smoothstep');
 					const currentAutoEndpointSide = currentConfig.get('autoEndpointSide', true);
 					const currentRelationshipMarkers = currentConfig.get('relationshipMarkers', true);
-					const currentEditableEdgeRouting = currentConfig.get('editableEdgeRouting', false);
+					const currentEditableEdgeRouting = currentConfig.get('editableEdgeRouting', true);
 					const currentExportQuality = currentConfig.get('exportQuality', 0.95);
 					const currentExportBackground = currentConfig.get('exportBackground', true);
 					const currentExportPadding = currentConfig.get('exportPadding', 20);
@@ -277,21 +277,21 @@ function createPreviewPanel(context, filePath, content) {
 
 	// Listen for configuration changes
 	const configChangeListener = vscode.workspace.onDidChangeConfiguration(event => {
-		if (event.affectsConfiguration('diagram.inheritThemeStyle') ||
-		    event.affectsConfiguration('diagram.edgeType') ||
-		    event.affectsConfiguration('diagram.autoEndpointSide') ||
-		    event.affectsConfiguration('diagram.relationshipMarkers') ||
-		    event.affectsConfiguration('diagram.editableEdgeRouting') ||
-		    event.affectsConfiguration('diagram.showCardinalityLabels') ||
-		    event.affectsConfiguration('diagram.exportQuality') ||
-		    event.affectsConfiguration('diagram.exportBackground') ||
-		    event.affectsConfiguration('diagram.exportPadding')) {
-			const config = vscode.workspace.getConfiguration('diagram');
+		if (event.affectsConfiguration('dbmlPreviewerPlus.inheritThemeStyle') ||
+		    event.affectsConfiguration('dbmlPreviewerPlus.edgeType') ||
+		    event.affectsConfiguration('dbmlPreviewerPlus.autoEndpointSide') ||
+		    event.affectsConfiguration('dbmlPreviewerPlus.relationshipMarkers') ||
+		    event.affectsConfiguration('dbmlPreviewerPlus.editableEdgeRouting') ||
+		    event.affectsConfiguration('dbmlPreviewerPlus.showCardinalityLabels') ||
+		    event.affectsConfiguration('dbmlPreviewerPlus.exportQuality') ||
+		    event.affectsConfiguration('dbmlPreviewerPlus.exportBackground') ||
+		    event.affectsConfiguration('dbmlPreviewerPlus.exportPadding')) {
+			const config = vscode.workspace.getConfiguration('dbmlPreviewerPlus');
 			const inheritThemeStyle = config.get('inheritThemeStyle', true);
 			const edgeType = config.get('edgeType', 'smoothstep');
 			const autoEndpointSide = config.get('autoEndpointSide', true);
 			const relationshipMarkers = config.get('relationshipMarkers', true);
-			const editableEdgeRouting = config.get('editableEdgeRouting', false);
+			const editableEdgeRouting = config.get('editableEdgeRouting', true);
 			const showCardinalityLabels = config.get('showCardinalityLabels', false);
 			const exportQuality = config.get('exportQuality', 0.95);
 			const exportBackground = config.get('exportBackground', true);
@@ -347,7 +347,7 @@ function createPreviewPanel(context, filePath, content) {
 		// Clear active panel reference
 		if (activePreviewPanel === panel) {
 			activePreviewPanel = null;
-			vscode.commands.executeCommand('setContext', 'dbmlPreviewerActive', false);
+			vscode.commands.executeCommand('setContext', 'dbmlPreviewerPlusActive', false);
 		}
 	});
 
@@ -458,19 +458,19 @@ function collectDbmlFiles(sourceDir, ext = '.png') {
  * @returns {vscode.WebviewPanel}
  */
 function createBulkExportPanel(context) {
-	const config = vscode.workspace.getConfiguration('diagram');
+	const config = vscode.workspace.getConfiguration('dbmlPreviewerPlus');
 	const inheritThemeStyle = config.get('inheritThemeStyle', false);
 	const edgeType = config.get('edgeType', 'smoothstep');
 	const autoEndpointSide = config.get('autoEndpointSide', true);
 	const relationshipMarkers = config.get('relationshipMarkers', true);
-	const editableEdgeRouting = config.get('editableEdgeRouting', false);
+	const editableEdgeRouting = config.get('editableEdgeRouting', true);
 	const showCardinalityLabels = config.get('showCardinalityLabels', false);
 	const exportQuality = config.get('exportQuality', 0.95);
 	const exportBackground = config.get('exportBackground', true);
 	const exportPadding = config.get('exportPadding', 20);
 
 	const panel = vscode.window.createWebviewPanel(
-		'dbmlBulkExport',
+		'dbmlBulkExportPlus',
 		'DBML Bulk Export (Processing...)',
 		{ viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
 		{
@@ -512,7 +512,7 @@ function handleBulkWebviewMessage(message, panel) {
 	}
 
 	if (message.command === 'getConfiguration') {
-		const cfg = vscode.workspace.getConfiguration('diagram');
+		const cfg = vscode.workspace.getConfiguration('dbmlPreviewerPlus');
 		panel.webview.postMessage({
 			type: 'configuration',
 			inheritThemeStyle: cfg.get('inheritThemeStyle', false),
@@ -664,7 +664,7 @@ async function runBulkExport(context, uri, format = 'png') {
 	}
 
 	// 3. Determine output folder
-	const config = vscode.workspace.getConfiguration('diagram');
+	const config = vscode.workspace.getConfiguration('dbmlPreviewerPlus');
 	let outputDir = resolveFolderPath(config.get('bulkExport.outputFolder', ''));
 	if (!outputDir) {
 		outputDir = path.join(sourceDir, 'dbml-exports');
