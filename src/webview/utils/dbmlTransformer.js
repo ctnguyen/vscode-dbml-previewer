@@ -115,6 +115,36 @@ const mapSourceAndTarget = (ref) => {
   return [source, target]
 }
 
+// Decide which side of each table an edge leaves/enters on. An explicit
+// data.sourceSide/targetSide ('left'|'right') always wins for that endpoint;
+// otherwise, when autoEndpointSide is on, the side facing the partner table is
+// chosen by comparing table centres; otherwise the legacy right->left is used.
+// srcTablePos/tgtTablePos are { x, width } of the two table header nodes.
+// Returns { sourceHandle, targetHandle } naming the four transparent handles.
+export const chooseEffectiveSides = (edge, srcTablePos, tgtTablePos, autoEndpointSide) => {
+  const explicitSource = edge?.data?.sourceSide;
+  const explicitTarget = edge?.data?.targetSide;
+
+  let sourceSide = (explicitSource === 'left' || explicitSource === 'right') ? explicitSource : undefined;
+  let targetSide = (explicitTarget === 'left' || explicitTarget === 'right') ? explicitTarget : undefined;
+
+  if (sourceSide === undefined || targetSide === undefined) {
+    if (autoEndpointSide && srcTablePos && tgtTablePos) {
+      const srcCenter = srcTablePos.x + (srcTablePos.width || 0) / 2;
+      const tgtCenter = tgtTablePos.x + (tgtTablePos.width || 0) / 2;
+      const autoSource = srcCenter > tgtCenter ? 'left' : 'right';
+      const autoTarget = srcCenter > tgtCenter ? 'right' : 'left';
+      if (sourceSide === undefined) sourceSide = autoSource;
+      if (targetSide === undefined) targetSide = autoTarget;
+    } else {
+      if (sourceSide === undefined) sourceSide = 'right';
+      if (targetSide === undefined) targetSide = 'left';
+    }
+  }
+
+  return { sourceHandle: `source-${sourceSide}`, targetHandle: `target-${targetSide}` };
+};
+
 /**
  * Find enum definition for a given column type
  * @param {string} typeName - The column type name
@@ -236,7 +266,7 @@ const analyzeColumnRelationships = (refs, tables, hasMultipleSchema) => {
   return columnHandles;
 };
 
-export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClick = null, onTableNoteClick = null, edgeType = 'smoothstep', tableChecks = {}, onTableChecksClick = null, showCardinalityLabels = false, onTableIndexesClick = null) => {
+export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClick = null, onTableNoteClick = null, edgeType = 'smoothstep', tableChecks = {}, onTableChecksClick = null, showCardinalityLabels = false, onTableIndexesClick = null, autoEndpointSide = true) => {
   if (!dbmlData?.schemas || dbmlData.schemas.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -511,8 +541,6 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
             id: `${sourceTable}.${sourceField}-${targetTable}.${targetField}-${index}-${fieldIndex}`,
             source: `${sourceTable}.${sourceField}`,
             target: `${targetTable}.${targetField}`,
-            sourceHandle: 'source',
-            targetHandle: 'target',
             type: 'custom',
             animated: false,
             selectable: true,
@@ -546,6 +574,22 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
 
   // Apply auto-layout using dagre (for table header nodes, sticky notes, and table groups)
   const layoutedElements = getLayoutedElements(nodes, edges, tableGroups, savedPositions);
+
+  // Assign endpoint handles (auto or explicit override) using the laid-out table
+  // geometry, so each edge leaves/enters on the side facing its partner table.
+  const tablePosById = {};
+  layoutedElements.nodes.forEach((node) => {
+    if (node.type === 'tableHeader') {
+      tablePosById[node.id] = { x: node.position.x, width: node.data?.tableWidth || 200 };
+    }
+  });
+  layoutedElements.edges.forEach((edge) => {
+    const src = tablePosById[`table-${edge.data.sourceTable}`];
+    const tgt = tablePosById[`table-${edge.data.targetTable}`];
+    const { sourceHandle, targetHandle } = chooseEffectiveSides(edge, src, tgt, autoEndpointSide);
+    edge.sourceHandle = sourceHandle;
+    edge.targetHandle = targetHandle;
+  });
 
   return {
     nodes: layoutedElements.nodes,

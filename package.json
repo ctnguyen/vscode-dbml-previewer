@@ -196,6 +196,11 @@
           ],
           "description": "The type of edge/connection lines to use for table relationships in the diagram."
         },
+        "diagram.autoEndpointSide": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically choose which side of each table a relationship connects to, so edges leave and enter on the side facing the related table. When disabled, edges always leave the right side and enter the left side."
+        },
         "diagram.showCardinalityLabels": {
           "type": "boolean",
           "default": false,

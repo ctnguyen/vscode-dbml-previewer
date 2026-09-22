@@ -195,6 +195,7 @@ function createPreviewPanel(context, filePath, content) {
 	const config = vscode.workspace.getConfiguration('diagram');
 	const inheritThemeStyle = config.get('inheritThemeStyle', true);
 	const edgeType = config.get('edgeType', 'smoothstep');
+	const autoEndpointSide = config.get('autoEndpointSide', true);
 	const showCardinalityLabels = config.get('showCardinalityLabels', false);
 	const exportQuality = config.get('exportQuality', 0.95);
 	const exportBackground = config.get('exportBackground', true);
@@ -207,7 +208,7 @@ function createPreviewPanel(context, filePath, content) {
 	}
 
 	// Set the webview content
-	panel.webview.html = getWebviewContent(content, fileName, currentFilePath, panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, initialLayout);
+	panel.webview.html = getWebviewContent(content, fileName, currentFilePath, panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide, initialLayout);
 
 	// Debounce state for layout file writes
 	let layoutSaveTimer = null;
@@ -228,11 +229,13 @@ function createPreviewPanel(context, filePath, content) {
 					const currentExportQuality = currentConfig.get('exportQuality', 0.95);
 					const currentExportBackground = currentConfig.get('exportBackground', true);
 					const currentExportPadding = currentConfig.get('exportPadding', 20);
+					const currentAutoEndpointSide = currentConfig.get('autoEndpointSide', true);
 					const currentShowCardinalityLabels = currentConfig.get('showCardinalityLabels', false);
 					panel.webview.postMessage({
 						type: 'configuration',
 						inheritThemeStyle: currentInheritThemeStyle,
 						edgeType: currentEdgeType,
+						autoEndpointSide: currentAutoEndpointSide,
 						showCardinalityLabels: currentShowCardinalityLabels,
 						exportQuality: currentExportQuality,
 						exportBackground: currentExportBackground,
@@ -262,6 +265,7 @@ function createPreviewPanel(context, filePath, content) {
 	// Listen for configuration changes
 	const configChangeListener = vscode.workspace.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration('diagram.inheritThemeStyle') ||
+		    event.affectsConfiguration('diagram.autoEndpointSide') ||
 		    event.affectsConfiguration('diagram.edgeType') ||
 		    event.affectsConfiguration('diagram.showCardinalityLabels') ||
 		    event.affectsConfiguration('diagram.exportQuality') ||
@@ -270,6 +274,7 @@ function createPreviewPanel(context, filePath, content) {
 			const config = vscode.workspace.getConfiguration('diagram');
 			const inheritThemeStyle = config.get('inheritThemeStyle', true);
 			const edgeType = config.get('edgeType', 'smoothstep');
+			const autoEndpointSide = config.get('autoEndpointSide', true);
 			const showCardinalityLabels = config.get('showCardinalityLabels', false);
 			const exportQuality = config.get('exportQuality', 0.95);
 			const exportBackground = config.get('exportBackground', true);
@@ -278,6 +283,7 @@ function createPreviewPanel(context, filePath, content) {
 				type: 'configurationChanged',
 				inheritThemeStyle: inheritThemeStyle,
 				edgeType: edgeType,
+				autoEndpointSide: autoEndpointSide,
 				showCardinalityLabels: showCardinalityLabels,
 				exportQuality: exportQuality,
 				exportBackground: exportBackground,
@@ -344,7 +350,7 @@ function createPreviewPanel(context, filePath, content) {
  * @param {Object|null} initialLayout
  * @returns {string}
  */
-function getWebviewContent(content, fileName, filePath, webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, initialLayout = null) {
+function getWebviewContent(content, fileName, filePath, webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide = true, initialLayout = null) {
 	// Get the local path to main script run in the webview
 	const scriptPathOnDisk = vscode.Uri.file(path.join(__dirname, 'dist', 'webview.js'));
 	const scriptUri = webview.asWebviewUri(scriptPathOnDisk);
@@ -379,6 +385,7 @@ function getWebviewContent(content, fileName, filePath, webview, inheritThemeSty
 			window.filePath = ${JSON.stringify(filePath)};
 			window.inheritThemeStyle = ${JSON.stringify(inheritThemeStyle)};
 			window.edgeType = ${JSON.stringify(edgeType)};
+			window.autoEndpointSide = ${JSON.stringify(autoEndpointSide)};
 			window.showCardinalityLabels = ${JSON.stringify(showCardinalityLabels)};
 			window.exportQuality = ${JSON.stringify(exportQuality)};
 			window.exportBackground = ${JSON.stringify(exportBackground)};
@@ -428,6 +435,7 @@ function createBulkExportPanel(context) {
 	const config = vscode.workspace.getConfiguration('diagram');
 	const inheritThemeStyle = config.get('inheritThemeStyle', false);
 	const edgeType = config.get('edgeType', 'smoothstep');
+	const autoEndpointSide = config.get('autoEndpointSide', true);
 	const showCardinalityLabels = config.get('showCardinalityLabels', false);
 	const exportQuality = config.get('exportQuality', 0.95);
 	const exportBackground = config.get('exportBackground', true);
@@ -444,7 +452,7 @@ function createBulkExportPanel(context) {
 		}
 	);
 
-	panel.webview.html = getWebviewContent('', 'bulk-export', '', panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding);
+	panel.webview.html = getWebviewContent('', 'bulk-export', '', panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide);
 
 	panel.webview.onDidReceiveMessage(
 		message => handleBulkWebviewMessage(message, panel),

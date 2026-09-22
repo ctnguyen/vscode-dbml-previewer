@@ -26,7 +26,7 @@ import TableIndexesTooltip from './TableIndexesTooltip';
 import StickyNote from './StickyNote';
 import ErrorDisplay from './ErrorDisplay';
 import TableNavigationDropdown from './TableNavigationDropdown';
-import { transformDBMLToNodes } from '../utils/dbmlTransformer';
+import { transformDBMLToNodes, chooseEffectiveSides } from '../utils/dbmlTransformer';
 import { parseDBMLError, formatErrorForDisplay } from '../utils/errorParser';
 import { preprocessChecks, preprocessOptionalRelationships } from '../utils/dbmlPreprocessor';
 import {
@@ -142,6 +142,7 @@ const DBMLPreview = ({ initialContent }) => {
   const [currentTheme, setCurrentTheme] = useState({});
   const [inheritThemeStyle, setInheritThemeStyle] = useState(true);
   const [edgeType, setEdgeType] = useState('smoothstep');
+  const [autoEndpointSide, setAutoEndpointSide] = useState(true);
   const [showCardinalityLabels, setShowCardinalityLabels] = useState(false);
   const [exportQuality, setExportQuality] = useState(0.95);
   const [exportBackground, setExportBackground] = useState(true);
@@ -593,7 +594,7 @@ const DBMLPreview = ({ initialContent }) => {
       window.vscode.postMessage({ type: 'clearLayout' });
       // Trigger re-transform with empty positions
       if (dbmlData) {
-        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, {}, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick);
+        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, {}, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide);
         setNodes(newNodes);
         setEdges(newEdges);
         setTableGroups(newTableGroups || []);
@@ -714,7 +715,36 @@ const DBMLPreview = ({ initialContent }) => {
         setNodes(currentNodes => recalculateTableGroupBounds(currentNodes, tableGroups));
       }, 200); // Slightly longer delay to ensure group positions are saved first
     }
-  }, [onNodesChange, tableGroups, recalculateTableGroupBounds, setNodes, draggedGroupPositions, saveCurrentLayout, savedPositions]);
+    // After a move, re-derive each edge's endpoint sides from the new table
+    // geometry so an edge that is now on the other side of its partner flips.
+    if (hasAnyNodePositionChanges || hasGroupDragEnd) {
+      setTimeout(() => {
+        setNodes(currentNodes => {
+          const tablePos = {};
+          currentNodes.forEach(n => {
+            if (n.type === 'tableHeader') {
+              tablePos[n.id] = { x: n.position.x, width: n.data?.tableWidth || 200 };
+            }
+          });
+          setEdges(currentEdges => {
+            let changed = false;
+            const nextEdges = currentEdges.map(edge => {
+              const src = tablePos[`table-${edge.data?.sourceTable}`];
+              const tgt = tablePos[`table-${edge.data?.targetTable}`];
+              const { sourceHandle, targetHandle } = chooseEffectiveSides(edge, src, tgt, autoEndpointSide);
+              if (edge.sourceHandle === sourceHandle && edge.targetHandle === targetHandle) {
+                return edge;
+              }
+              changed = true;
+              return { ...edge, sourceHandle, targetHandle };
+            });
+            return changed ? nextEdges : currentEdges;
+          });
+          return currentNodes;
+        });
+      }, 120);
+    }
+  }, [onNodesChange, tableGroups, recalculateTableGroupBounds, setNodes, setEdges, autoEndpointSide, draggedGroupPositions, saveCurrentLayout, savedPositions]);
 
   // Parse DBML content
   const parseDBML = useCallback(async (content) => {
@@ -788,6 +818,9 @@ const DBMLPreview = ({ initialContent }) => {
     const initialEdgeType = window.edgeType !== undefined
       ? window.edgeType
       : 'smoothstep';
+    const initialAutoEndpointSide = window.autoEndpointSide !== undefined
+      ? window.autoEndpointSide
+      : true;
     const initialShowCardinalityLabels = window.showCardinalityLabels !== undefined
       ? window.showCardinalityLabels
       : false;
@@ -803,6 +836,7 @@ const DBMLPreview = ({ initialContent }) => {
 
     setInheritThemeStyle(initialInheritThemeStyle);
     setEdgeType(initialEdgeType);
+    setAutoEndpointSide(initialAutoEndpointSide);
     setShowCardinalityLabels(initialShowCardinalityLabels);
     setExportQuality(initialExportQuality);
     setExportBackground(initialExportBackground);
@@ -852,6 +886,9 @@ const DBMLPreview = ({ initialContent }) => {
           if (message.edgeType !== undefined) {
             setEdgeType(message.edgeType);
           }
+          if (message.autoEndpointSide !== undefined) {
+            setAutoEndpointSide(message.autoEndpointSide);
+          }
           if (message.showCardinalityLabels !== undefined) {
             setShowCardinalityLabels(message.showCardinalityLabels);
           }
@@ -873,6 +910,9 @@ const DBMLPreview = ({ initialContent }) => {
           }
           if (message.edgeType !== undefined) {
             setEdgeType(message.edgeType);
+          }
+          if (message.autoEndpointSide !== undefined) {
+            setAutoEndpointSide(message.autoEndpointSide);
           }
           if (message.showCardinalityLabels !== undefined) {
             setShowCardinalityLabels(message.showCardinalityLabels);
@@ -943,7 +983,7 @@ const DBMLPreview = ({ initialContent }) => {
           saveLayout(fileId, cleanedPositions);
         }
 
-        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, cleanedPositions, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick);
+        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, cleanedPositions, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide);
         setNodes(newNodes);
         setEdges(newEdges);
         setTableGroups(newTableGroups || []);
