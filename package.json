@@ -201,6 +201,11 @@
           "default": true,
           "description": "Automatically choose which side of each table a relationship connects to, so edges leave and enter on the side facing the related table. When disabled, edges always leave the right side and enter the left side."
         },
+        "diagram.editableEdgeRouting": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow editing relationship routes by dragging waypoints. When enabled, select or hover an edge to reveal draggable points and segment handles; drag a point to bend the edge, drag a segment to add a point, double-click a point to delete it. Saved routes are always rendered regardless of this setting."
+        },
         "diagram.showCardinalityLabels": {
           "type": "boolean",
           "default": false,

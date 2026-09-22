@@ -268,7 +268,7 @@ const analyzeColumnRelationships = (refs, tables, hasMultipleSchema) => {
   return columnHandles;
 };
 
-export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClick = null, onTableNoteClick = null, edgeType = 'smoothstep', tableChecks = {}, onTableChecksClick = null, showCardinalityLabels = false, onTableIndexesClick = null, autoEndpointSide = true, savedEdgeRoutes = {}) => {
+export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClick = null, onTableNoteClick = null, edgeType = 'smoothstep', tableChecks = {}, onTableChecksClick = null, showCardinalityLabels = false, onTableIndexesClick = null, autoEndpointSide = true, savedEdgeRoutes = {}, onRouteChange = null, onRouteCommit = null, editableEdgeRouting = false, onResetEdge = null) => {
   if (!dbmlData?.schemas || dbmlData.schemas.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -604,6 +604,10 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
               sourceSide: seededSourceSide,
               targetSide: seededTargetSide,
               checkPoints: seededCheckPoints,
+              isEditable: editableEdgeRouting,
+              onRouteChange,
+              onRouteCommit,
+              onResetEdge,
             }
           });
         }

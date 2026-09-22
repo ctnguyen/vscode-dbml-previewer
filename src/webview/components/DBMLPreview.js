@@ -40,6 +40,7 @@ import {
   translateEdgeRoutesForMove,
 } from '../utils/layoutStorage';
 import { currentRefKeysFromEdges } from '../utils/refIdentity';
+import { resetRoute } from '../utils/edgeSegments';
 import { darkenHexColor } from '../utils/colorUtils';
 import CustomEdge from './CustomEdge';
 
@@ -54,6 +55,18 @@ const nodeTypes = {
 const edgeTypes = {
   custom: CustomEdge,
 };
+
+// Hide export chrome (controls, minimap, panels, and waypoint handles) for the
+// duration of an export, then always restore it — even if the export throws.
+async function withHiddenExportChrome(flowElement, fn) {
+  const sel = '.react-flow__controls, .react-flow__minimap, .react-flow__panel,'
+            + ' .dbml-waypoint-dot, .dbml-waypoint-seg, .dbml-edge-reset';
+  const hidden = Array.from(flowElement.querySelectorAll(sel));
+  const prev = hidden.map(el => el.style.display);
+  hidden.forEach(el => { el.style.display = 'none'; });
+  try { return await fn(); }
+  finally { hidden.forEach((el, i) => { el.style.display = prev[i]; }); }
+}
 
 // An edge "has a route" if it carries waypoints or an explicit side override;
 // such edges are kept above tables (z 11) even when not selected.
@@ -172,6 +185,8 @@ const DBMLPreview = ({ initialContent }) => {
   const [fileId, setFileId] = useState(null);
   const [savedPositions, setSavedPositions] = useState({});
   const [savedEdgeRoutes, setSavedEdgeRoutes] = useState({});
+  const [latchedEdgeId, setLatchedEdgeId] = useState(null);
+  const latchedEdgeIdRef = useRef(null);
   const [, setFilePath] = useState(null);
 
   // Refs mirroring live state so persistence can read the latest values
@@ -183,6 +198,7 @@ const DBMLPreview = ({ initialContent }) => {
   const [inheritThemeStyle, setInheritThemeStyle] = useState(true);
   const [edgeType, setEdgeType] = useState('smoothstep');
   const [autoEndpointSide, setAutoEndpointSide] = useState(true);
+  const [editableEdgeRouting, setEditableEdgeRouting] = useState(false);
   const [showCardinalityLabels, setShowCardinalityLabels] = useState(false);
   const [exportQuality, setExportQuality] = useState(0.95);
   const [exportBackground, setExportBackground] = useState(true);
@@ -212,6 +228,61 @@ const DBMLPreview = ({ initialContent }) => {
     saveLayout(fileId, positions);
     window.vscode.postMessage({ type: 'saveLayout', positions, edges: routes });
   }, [fileId]);
+
+  // Keep the latch readable synchronously without making these callbacks
+  // depend on it — the transform effect depends on them, and a changing
+  // identity there re-triggers the rebuild.
+  useEffect(() => { latchedEdgeIdRef.current = latchedEdgeId; }, [latchedEdgeId]);
+
+  // Live waypoint update while dragging: touch only the edge's checkPoints in
+  // edge state; no persistence until the gesture commits.
+  const onRouteChange = useCallback((edgeRefKey, nextCheckPoints) => {
+    setEdges(cur => cur.map(e =>
+      e.data?.refKey === edgeRefKey
+        ? { ...e, data: { ...e.data, checkPoints: nextCheckPoints } }
+        : e
+    ));
+  }, [setEdges]);
+
+  // Commit the final corner list. CustomEdge already merged the segment model —
+  // the same geometry it draws — so persist it verbatim, guarding only against
+  // non-finite values, or saved would drift from drawn.
+  const onRouteCommit = useCallback((edgeRefKey, finalCheckPoints) => {
+    const pts = (finalCheckPoints || [])
+      .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+      .map((p) => ({ x: p.x, y: p.y }));
+
+    const next = { ...routesRef.current };
+    const route = { ...(next[edgeRefKey] || {}) };
+    if (pts.length) route.checkPoints = pts; else delete route.checkPoints;
+    if (!route.sourceSide && !route.targetSide && !(route.checkPoints && route.checkPoints.length)) {
+      delete next[edgeRefKey];
+    } else {
+      next[edgeRefKey] = route;
+    }
+
+    setEdges(cur => cur.map(e =>
+      e.data?.refKey === edgeRefKey
+        ? { ...e, data: { ...e.data, checkPoints: pts.length ? pts : undefined } }
+        : e
+    ));
+    setRoutes(next);
+    postLayoutSnapshot({ positions: extractTablePositions(nodesRef.current), routes: routesRef.current });
+  }, [setEdges, setRoutes, postLayoutSnapshot]);
+
+  // Reset one relationship to its automatic route: drop its saved entry entirely
+  // and clear the edge's own route data.
+  const onResetEdge = useCallback((edgeRefKey) => {
+    const next = { ...routesRef.current };
+    delete next[edgeRefKey];
+    setEdges(cur => cur.map(e => {
+      if (e.data?.refKey !== edgeRefKey) return e;
+      const nextData = { ...e.data, ...resetRoute() };
+      return { ...e, data: nextData };
+    }));
+    setRoutes(next);
+    postLayoutSnapshot({ positions: extractTablePositions(nodesRef.current), routes: routesRef.current });
+  }, [setEdges, setRoutes, postLayoutSnapshot]);
 
   // Export handlers
   const handleExportToPng = useCallback(async () => {
@@ -439,6 +510,7 @@ const DBMLPreview = ({ initialContent }) => {
   // Handle edge click for tooltip display
   const onEdgeClick = useCallback((event, edge) => {
     event.stopPropagation();
+    setLatchedEdgeId(edge.id);
 
     // Calculate tooltip position from mouse event
     const rect = event.currentTarget.getBoundingClientRect?.() || { left: 0, top: 0 };
@@ -463,6 +535,18 @@ const DBMLPreview = ({ initialContent }) => {
       }
       return newSelected;
     });
+  }, []);
+
+  // Double-clicking an edge also enters editable mode; idempotent with the single
+  // click so the second click of a double-click cannot undo the first.
+  const onEdgeDoubleClick = useCallback((event, edge) => {
+    event.stopPropagation();
+    setLatchedEdgeId(edge.id);
+  }, []);
+
+  // Clicking empty canvas leaves editable mode.
+  const onPaneClick = useCallback(() => {
+    setLatchedEdgeId(null);
   }, []);
 
   // Handle tooltip close
@@ -538,6 +622,7 @@ const DBMLPreview = ({ initialContent }) => {
         setTableNoteTooltipData(null);
         setTableChecksTooltipData(null);
         setTableIndexesTooltipData(null);
+        setLatchedEdgeId(null);
       }
     };
 
@@ -553,6 +638,16 @@ const DBMLPreview = ({ initialContent }) => {
         setTableNoteTooltipData(null);
         setTableChecksTooltipData(null);
         setTableIndexesTooltipData(null);
+      }
+
+      // Release editable mode on any click away from the edge. Every control that
+      // belongs to the edited edge keeps it alive.
+      const onEdgeOrHandle = event.target.closest('.react-flow__edge')
+        || event.target.closest('.dbml-waypoint-dot')
+        || event.target.closest('.dbml-waypoint-seg')
+        || event.target.closest('.dbml-edge-reset');
+      if (!onEdgeOrHandle) {
+        setLatchedEdgeId(null);
       }
     };
 
@@ -654,7 +749,7 @@ const DBMLPreview = ({ initialContent }) => {
       window.vscode.postMessage({ type: 'clearLayout' });
       // Trigger re-transform with empty positions
       if (dbmlData) {
-        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, {}, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide);
+        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, {}, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide, {}, onRouteChange, onRouteCommit, editableEdgeRouting, onResetEdge);
         setNodes(newNodes);
         setEdges(newEdges);
         setTableGroups(newTableGroups || []);
@@ -887,6 +982,9 @@ const DBMLPreview = ({ initialContent }) => {
     const initialAutoEndpointSide = window.autoEndpointSide !== undefined
       ? window.autoEndpointSide
       : true;
+    const initialEditableEdgeRouting = window.editableEdgeRouting !== undefined
+      ? window.editableEdgeRouting
+      : false;
     const initialShowCardinalityLabels = window.showCardinalityLabels !== undefined
       ? window.showCardinalityLabels
       : false;
@@ -903,6 +1001,7 @@ const DBMLPreview = ({ initialContent }) => {
     setInheritThemeStyle(initialInheritThemeStyle);
     setEdgeType(initialEdgeType);
     setAutoEndpointSide(initialAutoEndpointSide);
+    setEditableEdgeRouting(initialEditableEdgeRouting);
     setShowCardinalityLabels(initialShowCardinalityLabels);
     setExportQuality(initialExportQuality);
     setExportBackground(initialExportBackground);
@@ -955,6 +1054,9 @@ const DBMLPreview = ({ initialContent }) => {
           if (message.autoEndpointSide !== undefined) {
             setAutoEndpointSide(message.autoEndpointSide);
           }
+          if (message.editableEdgeRouting !== undefined) {
+            setEditableEdgeRouting(message.editableEdgeRouting);
+          }
           if (message.showCardinalityLabels !== undefined) {
             setShowCardinalityLabels(message.showCardinalityLabels);
           }
@@ -979,6 +1081,9 @@ const DBMLPreview = ({ initialContent }) => {
           }
           if (message.autoEndpointSide !== undefined) {
             setAutoEndpointSide(message.autoEndpointSide);
+          }
+          if (message.editableEdgeRouting !== undefined) {
+            setEditableEdgeRouting(message.editableEdgeRouting);
           }
           if (message.showCardinalityLabels !== undefined) {
             setShowCardinalityLabels(message.showCardinalityLabels);
@@ -1047,7 +1152,7 @@ const DBMLPreview = ({ initialContent }) => {
         const positionsChanged = Object.keys(cleanedPositions).length !== Object.keys(currentSavedPositions).length;
 
         // Transform from the newly-cleaned positions and the current routes.
-        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, cleanedPositions, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide, routesRef.current);
+        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, cleanedPositions, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide, routesRef.current, onRouteChange, onRouteCommit, editableEdgeRouting, onResetEdge);
 
         // Drop routes whose refKey no longer exists in the freshly built edges.
         const currentRefKeys = currentRefKeysFromEdges(newEdges);
@@ -1079,6 +1184,7 @@ const DBMLPreview = ({ initialContent }) => {
     if (edges.length > 0) {
       const updatedEdges = edges.map(edge => {
         const isSelected = selectedEdgeIds.has(edge.id);
+        const isLatched = latchedEdgeId === edge.id;
 
         const currentStroke = edge.style?.stroke;
         const currentStrokeWidth = edge.style?.strokeWidth;
@@ -1103,6 +1209,7 @@ const DBMLPreview = ({ initialContent }) => {
             data: {
               ...edge.data,
               isSelected,
+              isLatched,
             },
             style: {
               ...edge.style,
@@ -1121,7 +1228,7 @@ const DBMLPreview = ({ initialContent }) => {
         setEdges(updatedEdges);
       }
     }
-  }, [selectedEdgeIds, edges, setEdges]);
+  }, [selectedEdgeIds, latchedEdgeId, edges, setEdges]);
 
   // Show error state with enhanced error display
   if (parseError && enhancedErrorInfo) {
@@ -1198,6 +1305,8 @@ const DBMLPreview = ({ initialContent }) => {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeClick={onEdgeClick}
+        onEdgeDoubleClick={onEdgeDoubleClick}
+        onPaneClick={onPaneClick}
         onNodeClick={onNodeClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}

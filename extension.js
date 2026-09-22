@@ -194,6 +194,7 @@ function createPreviewPanel(context, filePath, content) {
 	const inheritThemeStyle = config.get('inheritThemeStyle', true);
 	const edgeType = config.get('edgeType', 'smoothstep');
 	const autoEndpointSide = config.get('autoEndpointSide', true);
+	const editableEdgeRouting = config.get('editableEdgeRouting', false);
 	const showCardinalityLabels = config.get('showCardinalityLabels', false);
 	const exportQuality = config.get('exportQuality', 0.95);
 	const exportBackground = config.get('exportBackground', true);
@@ -208,7 +209,7 @@ function createPreviewPanel(context, filePath, content) {
 	}
 
 	// Set the webview content
-	panel.webview.html = getWebviewContent(content, fileName, currentFilePath, panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide, initialLayout, initialEdgeRoutes);
+	panel.webview.html = getWebviewContent(content, fileName, currentFilePath, panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide, editableEdgeRouting, initialLayout, initialEdgeRoutes);
 
 	// Debounce state for layout file writes. pendingEdges starts from the routes
 	// already persisted in the sidecar, so the first positions-only save (a plain
@@ -233,12 +234,14 @@ function createPreviewPanel(context, filePath, content) {
 					const currentExportBackground = currentConfig.get('exportBackground', true);
 					const currentExportPadding = currentConfig.get('exportPadding', 20);
 					const currentAutoEndpointSide = currentConfig.get('autoEndpointSide', true);
+					const currentEditableEdgeRouting = currentConfig.get('editableEdgeRouting', false);
 					const currentShowCardinalityLabels = currentConfig.get('showCardinalityLabels', false);
 					panel.webview.postMessage({
 						type: 'configuration',
 						inheritThemeStyle: currentInheritThemeStyle,
 						edgeType: currentEdgeType,
 						autoEndpointSide: currentAutoEndpointSide,
+						editableEdgeRouting: currentEditableEdgeRouting,
 						showCardinalityLabels: currentShowCardinalityLabels,
 						exportQuality: currentExportQuality,
 						exportBackground: currentExportBackground,
@@ -273,6 +276,7 @@ function createPreviewPanel(context, filePath, content) {
 	const configChangeListener = vscode.workspace.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration('diagram.inheritThemeStyle') ||
 		    event.affectsConfiguration('diagram.autoEndpointSide') ||
+		    event.affectsConfiguration('diagram.editableEdgeRouting') ||
 		    event.affectsConfiguration('diagram.edgeType') ||
 		    event.affectsConfiguration('diagram.showCardinalityLabels') ||
 		    event.affectsConfiguration('diagram.exportQuality') ||
@@ -282,6 +286,7 @@ function createPreviewPanel(context, filePath, content) {
 			const inheritThemeStyle = config.get('inheritThemeStyle', true);
 			const edgeType = config.get('edgeType', 'smoothstep');
 			const autoEndpointSide = config.get('autoEndpointSide', true);
+			const editableEdgeRouting = config.get('editableEdgeRouting', false);
 			const showCardinalityLabels = config.get('showCardinalityLabels', false);
 			const exportQuality = config.get('exportQuality', 0.95);
 			const exportBackground = config.get('exportBackground', true);
@@ -291,6 +296,7 @@ function createPreviewPanel(context, filePath, content) {
 				inheritThemeStyle: inheritThemeStyle,
 				edgeType: edgeType,
 				autoEndpointSide: autoEndpointSide,
+				editableEdgeRouting: editableEdgeRouting,
 				showCardinalityLabels: showCardinalityLabels,
 				exportQuality: exportQuality,
 				exportBackground: exportBackground,
@@ -357,7 +363,7 @@ function createPreviewPanel(context, filePath, content) {
  * @param {Object|null} initialLayout
  * @returns {string}
  */
-function getWebviewContent(content, fileName, filePath, webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide = true, initialLayout = null, initialEdgeRoutes = null) {
+function getWebviewContent(content, fileName, filePath, webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide = true, editableEdgeRouting = false, initialLayout = null, initialEdgeRoutes = null) {
 	// Get the local path to main script run in the webview
 	const scriptPathOnDisk = vscode.Uri.file(path.join(__dirname, 'dist', 'webview.js'));
 	const scriptUri = webview.asWebviewUri(scriptPathOnDisk);
@@ -393,6 +399,7 @@ function getWebviewContent(content, fileName, filePath, webview, inheritThemeSty
 			window.inheritThemeStyle = ${JSON.stringify(inheritThemeStyle)};
 			window.edgeType = ${JSON.stringify(edgeType)};
 			window.autoEndpointSide = ${JSON.stringify(autoEndpointSide)};
+			window.editableEdgeRouting = ${JSON.stringify(editableEdgeRouting)};
 			window.showCardinalityLabels = ${JSON.stringify(showCardinalityLabels)};
 			window.exportQuality = ${JSON.stringify(exportQuality)};
 			window.exportBackground = ${JSON.stringify(exportBackground)};
@@ -444,6 +451,7 @@ function createBulkExportPanel(context) {
 	const inheritThemeStyle = config.get('inheritThemeStyle', false);
 	const edgeType = config.get('edgeType', 'smoothstep');
 	const autoEndpointSide = config.get('autoEndpointSide', true);
+	const editableEdgeRouting = config.get('editableEdgeRouting', false);
 	const showCardinalityLabels = config.get('showCardinalityLabels', false);
 	const exportQuality = config.get('exportQuality', 0.95);
 	const exportBackground = config.get('exportBackground', true);
@@ -460,7 +468,7 @@ function createBulkExportPanel(context) {
 		}
 	);
 
-	panel.webview.html = getWebviewContent('', 'bulk-export', '', panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide);
+	panel.webview.html = getWebviewContent('', 'bulk-export', '', panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide, editableEdgeRouting);
 
 	panel.webview.onDidReceiveMessage(
 		message => handleBulkWebviewMessage(message, panel),
