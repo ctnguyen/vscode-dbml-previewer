@@ -40,6 +40,7 @@ import {
   translateEdgeRoutesForMove,
 } from '../utils/layoutStorage';
 import { currentRefKeysFromEdges } from '../utils/refIdentity';
+import { nearestSide, sidesFavouredByRoute } from '../utils/edgeSides';
 import { resetRoute } from '../utils/edgeSegments';
 import { darkenHexColor } from '../utils/colorUtils';
 import CustomEdge from './CustomEdge';
@@ -58,9 +59,10 @@ const edgeTypes = {
 
 // Hide export chrome (controls, minimap, panels, and waypoint handles) for the
 // duration of an export, then always restore it — even if the export throws.
+// The marker-definitions SVG is intentionally left visible so markers rasterise.
 async function withHiddenExportChrome(flowElement, fn) {
   const sel = '.react-flow__controls, .react-flow__minimap, .react-flow__panel,'
-            + ' .dbml-waypoint-dot, .dbml-waypoint-seg, .dbml-edge-reset';
+            + ' .dbml-waypoint-dot, .dbml-waypoint-seg, .dbml-endpoint-handle, .dbml-edge-reset';
   const hidden = Array.from(flowElement.querySelectorAll(sel));
   const prev = hidden.map(el => el.style.display);
   hidden.forEach(el => { el.style.display = 'none'; });
@@ -175,6 +177,11 @@ const DBMLPreview = ({ initialContent }) => {
   const [enhancedErrorInfo, setEnhancedErrorInfo] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedEdgeIds, setSelectedEdgeIds] = useState(new Set());
+  const [hoveredEdgeId, setHoveredEdgeId] = useState(null);
+  const [edgeMenu, setEdgeMenu] = useState(null);
+  const [latchedEdgeId, setLatchedEdgeId] = useState(null);
+  const latchedEdgeIdRef = useRef(null);
+  useEffect(() => { latchedEdgeIdRef.current = latchedEdgeId; }, [latchedEdgeId]);
   const [tooltipData, setTooltipData] = useState(null);
   const [columnTooltipData, setColumnTooltipData] = useState(null);
   const [tableNoteTooltipData, setTableNoteTooltipData] = useState(null);
@@ -185,8 +192,6 @@ const DBMLPreview = ({ initialContent }) => {
   const [fileId, setFileId] = useState(null);
   const [savedPositions, setSavedPositions] = useState({});
   const [savedEdgeRoutes, setSavedEdgeRoutes] = useState({});
-  const [latchedEdgeId, setLatchedEdgeId] = useState(null);
-  const latchedEdgeIdRef = useRef(null);
   const [, setFilePath] = useState(null);
 
   // Refs mirroring live state so persistence can read the latest values
@@ -230,11 +235,6 @@ const DBMLPreview = ({ initialContent }) => {
     window.vscode.postMessage({ type: 'saveLayout', positions, edges: routes });
   }, [fileId]);
 
-  // Keep the latch readable synchronously without making these callbacks
-  // depend on it — the transform effect depends on them, and a changing
-  // identity there re-triggers the rebuild.
-  useEffect(() => { latchedEdgeIdRef.current = latchedEdgeId; }, [latchedEdgeId]);
-
   // Live waypoint update while dragging: touch only the edge's checkPoints in
   // edge state; no persistence until the gesture commits.
   const onRouteChange = useCallback((edgeRefKey, nextCheckPoints) => {
@@ -245,10 +245,104 @@ const DBMLPreview = ({ initialContent }) => {
     ));
   }, [setEdges]);
 
-  // Commit the final corner list. CustomEdge already merged the segment model —
-  // the same geometry it draws — so persist it verbatim, guarding only against
-  // non-finite values, or saved would drift from drawn.
+  // Commit the final waypoint array: build the next route map from routesRef and
+  // the explicit points, keep it in sync synchronously, and post the snapshot.
+  // Apply a Source/Target side choice ('left' | 'right' | undefined=Automatic) to
+  // one edge, recompute its handles, and persist the route from explicit values.
+  // Core: set BOTH endpoint sides to explicit final values ('left'|'right'|
+  // undefined=Automatic) in ONE snapshot, recompute the handles and persist.
+  // Taking both sides at once is what lets route inference flip both endpoints
+  // without the second update reading a stale pre-first-flip edge (C8).
+  const applyEndpointSidesToEdge = useCallback((edgeId, finalSourceSide, finalTargetSide, persist = true) => {
+    const edge = edgesRef.current.find(e => e.id === edgeId);
+    if (!edge) { setEdgeMenu(null); return; }
+    const edgeRefKey = edge.data?.refKey;
+
+    // Table geometry for the handle recompute.
+    const tablePos = {};
+    nodesRef.current.forEach(n => {
+      if (n.type === 'tableHeader') {
+        tablePos[n.id] = { x: n.position.x, width: n.data?.tableWidth || 200 };
+      }
+    });
+
+    const nextData = { ...edge.data };
+    if (finalSourceSide === 'left' || finalSourceSide === 'right') nextData.sourceSide = finalSourceSide; else delete nextData.sourceSide;
+    if (finalTargetSide === 'left' || finalTargetSide === 'right') nextData.targetSide = finalTargetSide; else delete nextData.targetSide;
+
+    const src = tablePos[`table-${nextData.sourceTable}`];
+    const tgt = tablePos[`table-${nextData.targetTable}`];
+    const { sourceHandle, targetHandle } = chooseEffectiveSides({ data: nextData }, src, tgt, autoEndpointSide);
+
+    // Apply only the side/handle change; keep the checkPoints from the LIVE edge
+    // (cur), not from nextData — nextData came from edgesRef, which lags a just-
+    // committed route and would otherwise resurrect stale checkpoints into state.
+    setEdges(cur => cur.map(e => e.id === edgeId
+      ? { ...e, data: { ...nextData, checkPoints: e.data?.checkPoints }, sourceHandle, targetHandle }
+      : e));
+
+    // Persist explicitly from routesRef (never from queued state). Checkpoints are
+    // the persisted source of truth and are unchanged by a side change.
+    if (edgeRefKey && persist) {
+      const next = { ...routesRef.current };
+      const route = { ...(next[edgeRefKey] || {}) };
+      if (nextData.sourceSide) route.sourceSide = nextData.sourceSide; else delete route.sourceSide;
+      if (nextData.targetSide) route.targetSide = nextData.targetSide; else delete route.targetSide;
+      const hasCheckPoints = Array.isArray(route.checkPoints) && route.checkPoints.length > 0;
+      if (!route.sourceSide && !route.targetSide && !hasCheckPoints) {
+        delete next[edgeRefKey];
+      } else {
+        next[edgeRefKey] = route;
+      }
+      setRoutes(next);
+      postLayoutSnapshot({ positions: extractTablePositions(nodesRef.current), routes: routesRef.current });
+    }
+
+    setEdgeMenu(null);
+  }, [autoEndpointSide, setEdges, setRoutes, postLayoutSnapshot]);
+
+  // Set one endpoint's side, keeping the other endpoint's current side. Used by
+  // the right-click menu and the endpoint-drag gesture.
+  const applyEndpointSide = useCallback((edgeId, endpoint, value, persist = true) => {
+    const edge = edgesRef.current.find(e => e.id === edgeId);
+    if (!edge) { setEdgeMenu(null); return; }
+    const finalSourceSide = endpoint === 'source' ? value : edge.data?.sourceSide;
+    const finalTargetSide = endpoint === 'target' ? value : edge.data?.targetSide;
+    applyEndpointSidesToEdge(edgeId, finalSourceSide, finalTargetSide, persist);
+  }, [applyEndpointSidesToEdge]);
+
+  // Table box (left edge + width) for every table node, in flow coordinates.
+  const tableBoxes = useCallback(() => {
+    const boxes = {};
+    nodesRef.current.forEach(n => {
+      if (n.type === 'tableHeader') {
+        boxes[n.id] = { x: n.position.x, width: n.data?.tableWidth || 200 };
+      }
+    });
+    return boxes;
+  }, []);
+
+  // Dragging an endpoint handle across its table pins that end to the side the
+  // pointer is on. Live while dragging, persisted once on release.
+  const onEndpointDrag = useCallback((edgeRefKey, endpoint, flowPoint, commit) => {
+    const edge = edgesRef.current.find(e => e.data?.refKey === edgeRefKey);
+    if (!edge) return;
+    const boxes = tableBoxes();
+    const tableId = endpoint === 'source'
+      ? `table-${edge.data?.sourceTable}`
+      : `table-${edge.data?.targetTable}`;
+    const side = nearestSide(flowPoint.x, boxes[tableId]);
+    if (!side) return;
+    const current = endpoint === 'source' ? edge.data?.sourceSide : edge.data?.targetSide;
+    if (side === current && !commit) return;
+    applyEndpointSide(edge.id, endpoint, side, commit);
+  }, [applyEndpointSide, tableBoxes]);
+
   const onRouteCommit = useCallback((edgeRefKey, finalCheckPoints) => {
+    // CustomEdge already produced the merged segment-model corners — the same
+    // geometry it draws — so persist them verbatim; only guard against non-finite
+    // values. Re-running a different transform here could shift the corners and
+    // make saved != drawn.
     const pts = (finalCheckPoints || [])
       .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
       .map((p) => ({ x: p.x, y: p.y }));
@@ -269,62 +363,108 @@ const DBMLPreview = ({ initialContent }) => {
     ));
     setRoutes(next);
     postLayoutSnapshot({ positions: extractTablePositions(nodesRef.current), routes: routesRef.current });
-  }, [setEdges, setRoutes, postLayoutSnapshot]);
 
-  // Reset one relationship to its automatic route: drop its saved entry entirely
-  // and clear the edge's own route data.
-  const onResetEdge = useCallback((edgeRefKey) => {
+    // Route-derived side inference: if the committed route clearly rounds a
+    // table to reach its endpoint, move that endpoint to the side the route
+    // argues for. It only *sets* a side the geometry implies; it never fights an
+    // explicit choice, because the route the user just shaped is what it reads.
+    const edge = edgesRef.current.find(e => e.data?.refKey === edgeRefKey);
+    if (edge && pts.length) {
+      const boxes = tableBoxes();
+      const favoured = sidesFavouredByRoute({
+        checkPoints: pts,
+        sourceTable: boxes[`table-${edge.data?.sourceTable}`],
+        targetTable: boxes[`table-${edge.data?.targetTable}`],
+      });
+      // Compute BOTH final sides from the one current edge and apply them in a
+      // single snapshot. Two separate applyEndpointSide calls would each read
+      // the same stale edgesRef.current, so a both-endpoint flip could see the
+      // second call undo the first (C8).
+      const nextSource = favoured.sourceSide || edge.data?.sourceSide;
+      const nextTarget = favoured.targetSide || edge.data?.targetSide;
+      if (nextSource !== edge.data?.sourceSide || nextTarget !== edge.data?.targetSide) {
+        applyEndpointSidesToEdge(edge.id, nextSource, nextTarget, true);
+      }
+    }
+  }, [setEdges, setRoutes, postLayoutSnapshot, tableBoxes, applyEndpointSidesToEdge]);
+
+  // Persist the segment-model conversion of a legacy route when an edit commits
+  // it — currently an endpoint-side flip (one of the specified operations). The
+  // converted corners are saved with the current side overrides and NO
+  // route-derived inference (the sides were just chosen). CustomEdge only calls
+  // this on an actual side change, so opening a file or entering editable mode
+  // stays write-free.
+  const onRouteConvert = useCallback((edgeRefKey, converted) => {
+    const pts = (converted || [])
+      .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+      .map((p) => ({ x: p.x, y: p.y }));
     const next = { ...routesRef.current };
-    delete next[edgeRefKey];
-    setEdges(cur => cur.map(e => {
-      if (e.data?.refKey !== edgeRefKey) return e;
-      const nextData = { ...e.data, ...resetRoute() };
-      return { ...e, data: nextData };
-    }));
+    const route = { ...(next[edgeRefKey] || {}) };
+    if (pts.length) route.checkPoints = pts; else delete route.checkPoints;
+    if (!route.sourceSide && !route.targetSide && !(route.checkPoints && route.checkPoints.length)) {
+      delete next[edgeRefKey];
+    } else {
+      next[edgeRefKey] = route;
+    }
+    setEdges(cur => cur.map(e =>
+      e.data?.refKey === edgeRefKey
+        ? { ...e, data: { ...e.data, checkPoints: pts.length ? pts : undefined } }
+        : e
+    ));
     setRoutes(next);
     postLayoutSnapshot({ positions: extractTablePositions(nodesRef.current), routes: routesRef.current });
   }, [setEdges, setRoutes, postLayoutSnapshot]);
 
+  // Per-edge reset (D5): return the edge fully to its automatic route by
+  // clearing BOTH the segment corners and any left/right endpoint-side override,
+  // then recompute the handles automatically and persist. The per-edge
+  // equivalent of the global "Reset Layout" button. Fires immediately, no
+  // confirmation (D6) — its control sits clear of the drag handles.
+  const onResetEdge = useCallback((edgeRefKey) => {
+    if (!edgeRefKey) return;
+    const next = { ...routesRef.current };
+    delete next[edgeRefKey];
+
+    const boxes = tableBoxes();
+    setEdges(cur => cur.map(e => {
+      if (e.data?.refKey !== edgeRefKey) return e;
+      // resetRoute() is the single definition of "back to automatic": drop the
+      // corners and both side overrides.
+      const nextData = { ...e.data, ...resetRoute() };
+      const src = boxes[`table-${nextData.sourceTable}`];
+      const tgt = boxes[`table-${nextData.targetTable}`];
+      const { sourceHandle, targetHandle } = chooseEffectiveSides({ data: nextData }, src, tgt, autoEndpointSide);
+      return { ...e, data: nextData, sourceHandle, targetHandle };
+    }));
+
+    setRoutes(next);
+    postLayoutSnapshot({ positions: extractTablePositions(nodesRef.current), routes: routesRef.current });
+  }, [autoEndpointSide, setEdges, setRoutes, postLayoutSnapshot, tableBoxes]);
+
   // Export handlers
   const handleExportToPng = useCallback(async () => {
+    const flowElement = document.querySelector('.react-flow');
+    if (!flowElement) {
+      console.error('React Flow element not found');
+      return;
+    }
     try {
-      const flowElement = document.querySelector('.react-flow');
-      if (!flowElement) {
-        console.error('React Flow element not found');
-        return;
-      }
-
-      // Hide UI elements before export
-      const controls = flowElement.querySelector('.react-flow__controls');
-      const minimap = flowElement.querySelector('.react-flow__minimap');
-      const panels = flowElement.querySelectorAll('.react-flow__panel');
-
-      const elementsToHide = [controls, minimap, ...Array.from(panels)].filter(Boolean);
-      elementsToHide.forEach(el => {
-        el.style.display = 'none';
-      });
-
-      // Wait a moment for DOM to update
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Generate filename based on file path or default
       const fileName = window.filePath
         ? window.filePath.split('/').pop().replace('.dbml', '')
         : 'dbml-diagram';
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
 
-      const dataUrl = await toPng(flowElement, {
-        quality: exportQuality,
-        backgroundColor: exportBackground ? getThemeVar('background') : 'transparent',
-        pixelRatio: 2, // Higher resolution for better quality
-        style: {
-          padding: `${exportPadding}px`,
-        }
-      });
-
-      // Restore UI elements
-      elementsToHide.forEach(el => {
-        el.style.display = '';
+      const dataUrl = await withHiddenExportChrome(flowElement, async () => {
+        // Wait a moment for the DOM to update after hiding chrome
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return toPng(flowElement, {
+          quality: exportQuality,
+          backgroundColor: exportBackground ? getThemeVar('background') : 'transparent',
+          pixelRatio: 2, // Higher resolution for better quality
+          style: {
+            padding: `${exportPadding}px`,
+          }
+        });
       });
 
       const link = document.createElement('a');
@@ -333,57 +473,30 @@ const DBMLPreview = ({ initialContent }) => {
       link.click();
     } catch (error) {
       console.error('Error exporting to PNG:', error);
-      // Restore UI elements in case of error
-      const flowElement = document.querySelector('.react-flow');
-      if (flowElement) {
-        const controls = flowElement.querySelector('.react-flow__controls');
-        const minimap = flowElement.querySelector('.react-flow__minimap');
-        const panels = flowElement.querySelectorAll('.react-flow__panel');
-        [controls, minimap, ...Array.from(panels)].filter(Boolean).forEach(el => {
-          el.style.display = '';
-        });
-      }
       alert('Failed to export diagram to PNG. Please try again.');
     }
   }, [exportQuality, exportBackground, exportPadding]);
 
   const handleExportToSvg = useCallback(async () => {
+    const flowElement = document.querySelector('.react-flow');
+    if (!flowElement) {
+      console.error('React Flow element not found');
+      return;
+    }
     try {
-      const flowElement = document.querySelector('.react-flow');
-      if (!flowElement) {
-        console.error('React Flow element not found');
-        return;
-      }
-
-      // Hide UI elements before export
-      const controls = flowElement.querySelector('.react-flow__controls');
-      const minimap = flowElement.querySelector('.react-flow__minimap');
-      const panels = flowElement.querySelectorAll('.react-flow__panel');
-
-      const elementsToHide = [controls, minimap, ...Array.from(panels)].filter(Boolean);
-      elementsToHide.forEach(el => {
-        el.style.display = 'none';
-      });
-
-      // Wait a moment for DOM to update
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Generate filename based on file path or default
       const fileName = window.filePath
         ? window.filePath.split('/').pop().replace('.dbml', '')
         : 'dbml-diagram';
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
 
-      const dataUrl = await toSvg(flowElement, {
-        backgroundColor: exportBackground ? getThemeVar('background') : 'transparent',
-        style: {
-          padding: `${exportPadding}px`,
-        }
-      });
-
-      // Restore UI elements
-      elementsToHide.forEach(el => {
-        el.style.display = '';
+      const dataUrl = await withHiddenExportChrome(flowElement, async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return toSvg(flowElement, {
+          backgroundColor: exportBackground ? getThemeVar('background') : 'transparent',
+          style: {
+            padding: `${exportPadding}px`,
+          }
+        });
       });
 
       const link = document.createElement('a');
@@ -392,16 +505,6 @@ const DBMLPreview = ({ initialContent }) => {
       link.click();
     } catch (error) {
       console.error('Error exporting to SVG:', error);
-      // Restore UI elements in case of error
-      const flowElement = document.querySelector('.react-flow');
-      if (flowElement) {
-        const controls = flowElement.querySelector('.react-flow__controls');
-        const minimap = flowElement.querySelector('.react-flow__minimap');
-        const panels = flowElement.querySelectorAll('.react-flow__panel');
-        [controls, minimap, ...Array.from(panels)].filter(Boolean).forEach(el => {
-          el.style.display = '';
-        });
-      }
       alert('Failed to export diagram to SVG. Please try again.');
     }
   }, [exportBackground, exportPadding]);
@@ -426,37 +529,23 @@ const DBMLPreview = ({ initialContent }) => {
       const flowElement = document.querySelector('.react-flow');
       if (!flowElement) throw new Error('React Flow element not found');
 
-      const elementsToHide = [
-        flowElement.querySelector('.react-flow__controls'),
-        flowElement.querySelector('.react-flow__minimap'),
-        ...Array.from(flowElement.querySelectorAll('.react-flow__panel'))
-      ].filter(Boolean);
-      elementsToHide.forEach(el => { el.style.display = 'none'; });
-
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      const dataUrl = format === 'svg'
-        ? await toSvg(flowElement, {
-          backgroundColor: exportBackground ? getThemeVar('background') : 'transparent',
-          style: { padding: `${exportPadding}px` }
-        })
-        : await toPng(flowElement, {
-          quality: exportQuality,
-          backgroundColor: exportBackground ? getThemeVar('background') : 'transparent',
-          pixelRatio: 2,
-          style: { padding: `${exportPadding}px` }
-        });
-
-      elementsToHide.forEach(el => { el.style.display = ''; });
+      const dataUrl = await withHiddenExportChrome(flowElement, async () => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return format === 'svg'
+          ? toSvg(flowElement, {
+            backgroundColor: exportBackground ? getThemeVar('background') : 'transparent',
+            style: { padding: `${exportPadding}px` }
+          })
+          : toPng(flowElement, {
+            quality: exportQuality,
+            backgroundColor: exportBackground ? getThemeVar('background') : 'transparent',
+            pixelRatio: 2,
+            style: { padding: `${exportPadding}px` }
+          });
+      });
 
       vscode.postMessage({ type: 'bulkExportResult', outputName, dataUrl, format });
     } catch (error) {
-      const fe = document.querySelector('.react-flow');
-      if (fe) {
-        [fe.querySelector('.react-flow__controls'), fe.querySelector('.react-flow__minimap'),
-          ...Array.from(fe.querySelectorAll('.react-flow__panel'))].filter(Boolean)
-          .forEach(el => { el.style.display = ''; });
-      }
       vscode.postMessage({ type: 'bulkExportResult', outputName, error: error.message || 'Unknown error' });
     }
   }, [exportQuality, exportBackground, exportPadding]);
@@ -509,9 +598,11 @@ const DBMLPreview = ({ initialContent }) => {
   }, [handleColumnClick]);
 
   // Handle edge click for tooltip display
-  // A click selects the edge and enters editable mode. The relationship note
-  // follows the pointer instead (see onEdgeMouseEnter), so it can never sit over
-  // the handles being dragged.
+  // A single click enters editable mode for that edge and selects it. It is
+  // deliberately idempotent rather than a toggle: clicking an edge that is
+  // already being edited must not shut it, or the click that ends a gesture
+  // could drop the user out of edit mode. Editable mode is left by clicking
+  // away from the edge (see handleClickOutside).
   const onEdgeClick = useCallback((event, edge) => {
     event.stopPropagation();
     setTooltipData(null);
@@ -519,23 +610,12 @@ const DBMLPreview = ({ initialContent }) => {
     setSelectedEdgeIds(() => new Set([edge.id]));
   }, []);
 
-  // Double-clicking an edge also enters editable mode; idempotent with the single
-  // click so the second click of a double-click cannot undo the first.
-  const onEdgeDoubleClick = useCallback((event, edge) => {
-    event.stopPropagation();
-    setTooltipData(null);
-    setLatchedEdgeId(edge.id);
-  }, []);
-
-  // Clicking empty canvas leaves editable mode.
-  const onPaneClick = useCallback(() => {
-    setLatchedEdgeId(null);
-  }, []);
-
-  // Hovering an edge opens the relationship note beside the pointer; leaving
-  // closes it. An edge in editable mode shows no note — it would sit over the
-  // very handles being dragged.
+  // Hovering an edge highlights it with a moving dash and opens the relationship
+  // note beside the pointer; leaving closes it again. An edge that is in editable
+  // mode shows no note — the note would sit over the very handles being dragged,
+  // which is what made it annoying when it was click-driven and sticky.
   const onEdgeMouseEnter = useCallback((event, edge) => {
+    setHoveredEdgeId(edge.id);
     if (latchedEdgeIdRef.current === edge.id) return;
     const rect = event.currentTarget?.getBoundingClientRect?.() || { left: 0, top: 0 };
     setTooltipData({
@@ -547,8 +627,40 @@ const DBMLPreview = ({ initialContent }) => {
     });
   }, []);
   const onEdgeMouseLeave = useCallback(() => {
+    setHoveredEdgeId(null);
     setTooltipData(null);
   }, []);
+
+  // Double-clicking an edge enters editable mode: its segment handles and reset
+  // control appear (see CustomEdge). Editable mode persists until the user
+  // clicks the canvas or presses Escape, so handles can be reached without
+  // keeping the pointer on the line.
+  const onEdgeDoubleClick = useCallback((event, edge) => {
+    event.stopPropagation();
+    setTooltipData(null);
+    setLatchedEdgeId(edge.id);
+  }, []);
+
+  // Clicking empty canvas leaves editable mode and closes any open menu.
+  const onPaneClick = useCallback(() => {
+    setLatchedEdgeId(null);
+    setEdgeMenu(null);
+  }, []);
+
+  // Escape also leaves editable mode.
+  useEffect(() => {
+    if (latchedEdgeId == null) return undefined;
+    const onKey = (ev) => { if (ev.key === 'Escape') setLatchedEdgeId(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [latchedEdgeId]);
+
+  const onEdgeContextMenu = useCallback((event, edge) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setEdgeMenu({ edgeId: edge.id, x: event.clientX, y: event.clientY });
+  }, []);
+
 
   // Handle tooltip close
   const handleCloseTooltip = useCallback(() => {
@@ -623,6 +735,7 @@ const DBMLPreview = ({ initialContent }) => {
         setTableNoteTooltipData(null);
         setTableChecksTooltipData(null);
         setTableIndexesTooltipData(null);
+        setEdgeMenu(null);
         setLatchedEdgeId(null);
       }
     };
@@ -641,11 +754,19 @@ const DBMLPreview = ({ initialContent }) => {
         setTableIndexesTooltipData(null);
       }
 
-      // Release editable mode on any click away from the edge. Every control that
-      // belongs to the edited edge keeps it alive.
+      // Dismiss the endpoint-side menu on any click outside it.
+      if (!event.target.closest('[data-edge-menu]')) {
+        setEdgeMenu(null);
+      }
+
+      // Release editable mode on any click away from the edge. Every
+      // control that belongs to the edited edge — the edge line, the segment
+      // handles, the soft split point, the endpoint side handles and the reset
+      // control — keeps editable mode alive.
       const onEdgeOrHandle = event.target.closest('.react-flow__edge')
         || event.target.closest('.dbml-waypoint-dot')
         || event.target.closest('.dbml-waypoint-seg')
+        || event.target.closest('.dbml-endpoint-handle')
         || event.target.closest('.dbml-edge-reset');
       if (!onEdgeOrHandle) {
         setLatchedEdgeId(null);
@@ -654,10 +775,12 @@ const DBMLPreview = ({ initialContent }) => {
 
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('click', handleClickOutside);
+    document.addEventListener('contextmenu', handleClickOutside);
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('click', handleClickOutside);
+      document.removeEventListener('contextmenu', handleClickOutside);
     };
   }, []);
 
@@ -726,37 +849,32 @@ const DBMLPreview = ({ initialContent }) => {
     return updatedNodes;
   }, []);
 
-  // Save layout when table positions change
+  // Save layout when table positions change. Routes are unchanged by a position
+  // drag, so the current routesRef is reused verbatim.
   const saveCurrentLayout = useCallback(() => {
-    if (fileId) {
-      // Use a fresh reference to nodes via setNodes callback
-      setNodes(currentNodes => {
-        if (currentNodes.length > 0) {
-          const positions = extractTablePositions(currentNodes);
-          setSavedPositions(positions);
-          saveLayout(fileId, positions);
-          window.vscode.postMessage({ type: 'saveLayout', positions });
-        }
-        return currentNodes; // Don't modify nodes, just extract positions
-      });
+    if (fileId && nodesRef.current.length > 0) {
+      const positions = extractTablePositions(nodesRef.current);
+      setSavedPositions(positions);
+      postLayoutSnapshot({ positions, routes: routesRef.current });
     }
-  }, [fileId]);
+  }, [fileId, postLayoutSnapshot]);
 
-  // Reset layout to auto-layout
+  // Reset layout to auto-layout (clears both saved positions and saved routes)
   const resetLayout = useCallback(() => {
     if (fileId) {
       setSavedPositions({});
+      setRoutes({});
       saveLayout(fileId, {});
       window.vscode.postMessage({ type: 'clearLayout' });
-      // Trigger re-transform with empty positions
+      // Trigger re-transform with empty positions AND empty routes
       if (dbmlData) {
-        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, {}, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide, relationshipMarkers, {}, onRouteChange, onRouteCommit, editableEdgeRouting, onResetEdge);
+        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, {}, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide, relationshipMarkers, {}, onRouteChange, onRouteCommit, editableEdgeRouting, onEndpointDrag, onResetEdge, onRouteConvert);
         setNodes(newNodes);
         setEdges(newEdges);
         setTableGroups(newTableGroups || []);
       }
     }
-  }, [fileId, dbmlData, edgeType, showCardinalityLabels, tableChecks, setNodes, setEdges, handleColumnClick, handleTableNoteClick, handleTableChecksClick, handleTableIndexesClick]);
+  }, [fileId, dbmlData, edgeType, autoEndpointSide, relationshipMarkers, editableEdgeRouting, showCardinalityLabels, tableChecks, setNodes, setEdges, setRoutes, onRouteChange, onRouteCommit, onEndpointDrag, onResetEdge, onRouteConvert, handleColumnClick, handleTableNoteClick, handleTableChecksClick, handleTableIndexesClick]);
 
   // Custom nodes change handler that handles TableGroup dragging
   const handleNodesChange = useCallback((changes) => {
@@ -798,42 +916,46 @@ const DBMLPreview = ({ initialContent }) => {
           const offsetX = endPosition.x - startPosition.x;
           const offsetY = endPosition.y - startPosition.y;
 
-          // Move member tables and update saved positions
-          setNodes(currentNodes => {
-            const updatedNodes = [...currentNodes];
-            const groupNode = updatedNodes.find(node => node.id === groupId);
-            const groupName = groupNode?.data?.tableGroup?.name;
+          // Explicit snapshots taken from the synced refs BEFORE scheduling any
+          // state update (plan §6: never assemble persisted values inside a
+          // setNodes/setEdges updater — a queued updater would drop them).
+          const currentNodes = nodesRef.current;
+          const groupNode = currentNodes.find(node => node.id === groupId);
+          const groupName = groupNode?.data?.tableGroup?.name;
 
-            if (groupName && (offsetX !== 0 || offsetY !== 0)) {
-              const updatedPositions = { ...savedPositions };
+          if (groupName && (offsetX !== 0 || offsetY !== 0)) {
+            const movedTableIds = new Set(
+              currentNodes.filter(n => n.type === 'tableHeader' && n.data?.tableGroup?.name === groupName)
+                .map(n => n.id)
+            );
 
-              updatedNodes.forEach((node, index) => {
-                if (node.type === 'tableHeader' && node.data?.tableGroup?.name === groupName) {
-                  const newPosition = {
-                    x: node.position.x + offsetX,
-                    y: node.position.y + offsetY
-                  };
-
-                  updatedNodes[index] = {
-                    ...node,
-                    position: newPosition
-                  };
-
-                  // Update saved positions for member tables
-                  updatedPositions[node.id] = newPosition;
-                }
-              });
-
-              // Update saved positions state and storage
-              setSavedPositions(updatedPositions);
-              if (fileId) {
-                saveLayout(fileId, updatedPositions);
-                window.vscode.postMessage({ type: 'saveLayout', positions: updatedPositions });
+            // Move member tables (explicit next-nodes array + positions map).
+            const updatedPositions = { ...savedPositions };
+            const nextNodes = currentNodes.map(node => {
+              if (node.type === 'tableHeader' && node.data?.tableGroup?.name === groupName) {
+                const newPosition = { x: node.position.x + offsetX, y: node.position.y + offsetY };
+                updatedPositions[node.id] = newPosition;
+                return { ...node, position: newPosition };
               }
-            }
+              return node;
+            });
 
-            return updatedNodes;
-          });
+            // Translate routed edges whose BOTH endpoints moved, from explicit
+            // snapshots of the current edges and routes.
+            const { nextEdges, nextRoutes, edgesChanged } = translateEdgeRoutesForMove(
+              edgesRef.current, routesRef.current, movedTableIds, offsetX, offsetY
+            );
+            const routesChanged = !shallowEqualRoutes(routesRef.current, nextRoutes);
+
+            // Apply outside every updater; setRoutes syncs routesRef before the post.
+            setNodes(nextNodes);
+            setSavedPositions(updatedPositions);
+            if (edgesChanged) setEdges(nextEdges);
+            if (routesChanged) setRoutes(nextRoutes);
+            if (fileId) {
+              postLayoutSnapshot({ positions: updatedPositions, routes: routesRef.current });
+            }
+          }
 
           // Clear the tracked position
           setDraggedGroupPositions(prev => {
@@ -871,8 +993,9 @@ const DBMLPreview = ({ initialContent }) => {
         setNodes(currentNodes => recalculateTableGroupBounds(currentNodes, tableGroups));
       }, 200); // Slightly longer delay to ensure group positions are saved first
     }
-    // After a move, re-derive each edge's endpoint sides from the new table
-    // geometry so an edge that is now on the other side of its partner flips.
+
+    // A table move can change which side faces the partner, so recompute the
+    // effective endpoint handles for every edge using the latest table geometry.
     if (hasAnyNodePositionChanges || hasGroupDragEnd) {
       setTimeout(() => {
         setNodes(currentNodes => {
@@ -900,7 +1023,7 @@ const DBMLPreview = ({ initialContent }) => {
         });
       }, 120);
     }
-  }, [onNodesChange, tableGroups, recalculateTableGroupBounds, setNodes, setEdges, autoEndpointSide, draggedGroupPositions, saveCurrentLayout, savedPositions]);
+  }, [onNodesChange, tableGroups, recalculateTableGroupBounds, setNodes, setEdges, setRoutes, autoEndpointSide, draggedGroupPositions, saveCurrentLayout, postLayoutSnapshot, savedPositions, nodes]);
 
   // Parse DBML content
   const parseDBML = useCallback(async (content) => {
@@ -1163,7 +1286,7 @@ const DBMLPreview = ({ initialContent }) => {
         const positionsChanged = Object.keys(cleanedPositions).length !== Object.keys(currentSavedPositions).length;
 
         // Transform from the newly-cleaned positions and the current routes.
-        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, cleanedPositions, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide, relationshipMarkers, routesRef.current, onRouteChange, onRouteCommit, editableEdgeRouting, onResetEdge);
+        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, cleanedPositions, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide, relationshipMarkers, routesRef.current, onRouteChange, onRouteCommit, editableEdgeRouting, onEndpointDrag, onResetEdge, onRouteConvert);
 
         // Drop routes whose refKey no longer exists in the freshly built edges.
         const currentRefKeys = currentRefKeysFromEdges(newEdges);
@@ -1188,13 +1311,14 @@ const DBMLPreview = ({ initialContent }) => {
         console.error('Error transforming DBML data:', error);
       }
     }
-  }, [dbmlData, fileId, edgeType, showCardinalityLabels, tableChecks, setNodes, setEdges]);
+  }, [dbmlData, fileId, edgeType, autoEndpointSide, relationshipMarkers, editableEdgeRouting, showCardinalityLabels, savedEdgeRoutes, tableChecks, setNodes, setEdges, setRoutes, postLayoutSnapshot, onRouteChange, onRouteCommit]);
 
   // Update edge styles based on selection state
   useEffect(() => {
     if (edges.length > 0) {
       const updatedEdges = edges.map(edge => {
         const isSelected = selectedEdgeIds.has(edge.id);
+        const isHovered = hoveredEdgeId === edge.id;
         const isLatched = latchedEdgeId === edge.id;
 
         const currentStroke = edge.style?.stroke;
@@ -1203,16 +1327,25 @@ const DBMLPreview = ({ initialContent }) => {
         const currentAnimated = edge.animated;
         const currentZIndex = edge.zIndex;
         const currentDataSelected = edge.data?.isSelected;
+        const currentDataHovered = edge.data?.isHovered;
+        const currentDataLatched = edge.data?.isLatched;
 
+        // Hover (and the double-click editable latch) highlight the line with a
+        // dashed, animated stroke to show it is selectable / being edited — no
+        // handles appear on hover, only this highlight. Selection and editing
+        // additionally thicken and recolour the stroke and raise it to the top.
         const baseStroke = edge.data?.refColor ? darkenHexColor(edge.data.refColor) : getThemeVar('chartsLines');
-        const expectedStroke = isSelected ? getThemeVar('focusBorder') : baseStroke;
-        const expectedStrokeWidth = isSelected ? 3 : 2;
-        const expectedDashArray = isSelected ? '5 5' : '0';
-        const expectedAnimated = isSelected;
-        const expectedZIndex = isSelected ? 1001 : (edgeHasRoute(edge) ? 11 : 0);
+        const highlighted = isSelected || isHovered || isLatched;
+        const emphasised = isSelected || isLatched;
+        const expectedStroke = emphasised ? getThemeVar('focusBorder') : baseStroke;
+        const expectedStrokeWidth = emphasised ? 3 : 2;
+        const marching = (isHovered || isSelected) && !isLatched;
+        const expectedDashArray = marching ? '5 5' : '0';
+        const expectedAnimated = marching;
+        const expectedZIndex = emphasised ? 1001 : (edgeHasRoute(edge) ? 11 : 0);
 
-        // Only update if the style has actually changed
-        if (currentStroke !== expectedStroke || currentStrokeWidth !== expectedStrokeWidth || currentDashArray !== expectedDashArray || currentAnimated !== expectedAnimated || currentZIndex !== expectedZIndex || currentDataSelected !== isSelected) {
+        // Only update if the style or interaction state has actually changed
+        if (currentStroke !== expectedStroke || currentStrokeWidth !== expectedStrokeWidth || currentDashArray !== expectedDashArray || currentAnimated !== expectedAnimated || currentZIndex !== expectedZIndex || currentDataSelected !== isSelected || currentDataHovered !== isHovered || currentDataLatched !== isLatched) {
           return {
             ...edge,
             animated: expectedAnimated,
@@ -1220,6 +1353,7 @@ const DBMLPreview = ({ initialContent }) => {
             data: {
               ...edge.data,
               isSelected,
+              isHovered,
               isLatched,
             },
             style: {
@@ -1239,7 +1373,7 @@ const DBMLPreview = ({ initialContent }) => {
         setEdges(updatedEdges);
       }
     }
-  }, [selectedEdgeIds, latchedEdgeId, edges, setEdges]);
+  }, [selectedEdgeIds, hoveredEdgeId, latchedEdgeId, edges, setEdges]);
 
   // Show error state with enhanced error display
   if (parseError && enhancedErrorInfo) {
@@ -1316,10 +1450,11 @@ const DBMLPreview = ({ initialContent }) => {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeClick={onEdgeClick}
+        onEdgeContextMenu={onEdgeContextMenu}
         onEdgeDoubleClick={onEdgeDoubleClick}
-        onPaneClick={onPaneClick}
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
+        onPaneClick={onPaneClick}
         onNodeClick={onNodeClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
@@ -1358,6 +1493,66 @@ const DBMLPreview = ({ initialContent }) => {
 
         <TableNavigationPanel dbmlData={dbmlData} />
         <EdgeNavigationProvider setNavigationHandler={setNavigationHandler} />
+
+        {/* Handle legend — only in editable mode (a double-clicked edge), so it
+            explains the handle kinds exactly when they are on screen and never
+            clutters the canvas otherwise. */}
+        {editableEdgeRouting && latchedEdgeId && (
+          <Panel position="bottom-center">
+            <div style={{
+              background: getThemeVar('background'),
+              color: getThemeVar('foreground'),
+              border: `1px solid ${getThemeVar('panelBorder')}`,
+              borderRadius: '4px',
+              padding: '6px 10px',
+              fontSize: '11px',
+              display: 'flex',
+              gap: '14px',
+              alignItems: 'center',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+            }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{
+                  width: 11, height: 11, borderRadius: '50%',
+                  background: getThemeVar('foreground'),
+                  border: '2px solid ' + getThemeVar('background'),
+                  boxShadow: `0 0 0 1px ${getThemeVar('foreground')}`,
+                  display: 'inline-block',
+                }} />
+                Segment — drag to slide it (merges when aligned)
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{
+                  width: 10, height: 10, borderRadius: '50%',
+                  background: 'transparent',
+                  border: `1.5px dashed ${getThemeVar('foreground')}`,
+                  opacity: 0.6,
+                  display: 'inline-block',
+                }} />
+                Split — drag to add a bend
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{
+                  width: 11, height: 11, borderRadius: 3,
+                  background: getThemeVar('background'),
+                  border: `2px solid ${getThemeVar('foreground')}`,
+                  display: 'inline-block',
+                }} />
+                End — drag across a table to pick its side
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{
+                  width: 13, height: 13, borderRadius: '50%',
+                  background: getThemeVar('background'),
+                  border: `1.5px solid ${getThemeVar('foreground')}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 10,
+                }}>⟳</span>
+                Reset — back to the automatic route
+              </span>
+            </div>
+          </Panel>
+        )}
 
         {/* Stats Panel - Top Right */}
         <Panel position="top-right">
@@ -1483,6 +1678,61 @@ const DBMLPreview = ({ initialContent }) => {
           onClose={handleCloseTableIndexesTooltip}
         />
       )}
+
+      {edgeMenu && (() => {
+        const menuEdge = edges.find(e => e.id === edgeMenu.edgeId);
+        const currentSource = menuEdge?.data?.sourceSide;
+        const currentTarget = menuEdge?.data?.targetSide;
+        const menuItemStyle = (active) => ({
+          display: 'block',
+          width: '100%',
+          textAlign: 'left',
+          background: active ? getThemeVar('buttonBackground') : 'transparent',
+          color: active ? getThemeVar('buttonForeground') : getThemeVar('foreground'),
+          border: 'none',
+          padding: '4px 10px',
+          fontSize: '12px',
+          cursor: 'pointer',
+          whiteSpace: 'nowrap',
+        });
+        const sectionLabelStyle = {
+          padding: '4px 10px 2px',
+          fontSize: '10px',
+          fontWeight: 700,
+          color: getThemeVar('descriptionForeground'),
+          textTransform: 'uppercase',
+        };
+        const rows = [
+          { endpoint: 'source', label: 'Source', current: currentSource },
+          { endpoint: 'target', label: 'Target', current: currentTarget },
+        ];
+        return (
+          <div
+            data-edge-menu="true"
+            style={{
+              position: 'fixed',
+              left: edgeMenu.x,
+              top: edgeMenu.y,
+              zIndex: 2000,
+              background: getThemeVar('background'),
+              border: `1px solid ${getThemeVar('panelBorder')}`,
+              borderRadius: '4px',
+              padding: '4px 0',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+              minWidth: '140px',
+            }}
+          >
+            {rows.map((row, rowIndex) => (
+              <div key={row.endpoint} style={rowIndex > 0 ? { borderTop: `1px solid ${getThemeVar('panelBorder')}`, marginTop: '2px', paddingTop: '2px' } : undefined}>
+                <div style={sectionLabelStyle}>{row.label}</div>
+                <button style={menuItemStyle(!row.current)} onClick={() => applyEndpointSide(edgeMenu.edgeId, row.endpoint, undefined)}>Automatic</button>
+                <button style={menuItemStyle(row.current === 'left')} onClick={() => applyEndpointSide(edgeMenu.edgeId, row.endpoint, 'left')}>Left</button>
+                <button style={menuItemStyle(row.current === 'right')} onClick={() => applyEndpointSide(edgeMenu.edgeId, row.endpoint, 'right')}>Right</button>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
     </div>
   );
 };

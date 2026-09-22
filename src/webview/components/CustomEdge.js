@@ -22,6 +22,14 @@ import {
 // router: every edge is drawn by the segment router regardless.
 const cornerRadiusFor = (pathStyle) => (pathStyle === 'straight' ? 0 : 8);
 
+// True when two interior corner lists are point-for-point equal.
+const sameCheckList = (a, b) => {
+  const x = a || [];
+  const y = b || [];
+  if (x.length !== y.length) return false;
+  return x.every((p, i) => p.x === y[i].x && p.y === y[i].y);
+};
+
 // How far along the path the relationship symbols sit. Far enough from the
 // endpoint that the table node never covers them, close enough to read as
 // belonging to that end.
@@ -230,6 +238,25 @@ const CustomEdge = ({
   // the converted vertices back. A side change moves an endpoint, so the saved
   // (possibly legacy free-point) route is re-derived against the new geometry and
   // committed, keeping saved == drawn. Guarded so it never fires on mount (open)
+  // or on merely entering editable mode — only on an actual side change.
+  const sideSigRef = useRef(null);
+  useEffect(() => {
+    const sig = `${effSourceSide}|${effTargetSide}`;
+    if (sideSigRef.current === null) { sideSigRef.current = sig; return; }
+    if (sideSigRef.current === sig) return;
+    sideSigRef.current = sig;
+    if (isDraggingRef.current) return;
+    const saved = data?.checkPoints;
+    if (!Array.isArray(saved) || saved.length === 0) return;
+    const converted = interiorOf(buildRouteVertices({
+      source: { x: sourceX, y: sourceY },
+      target: { x: targetX, y: targetY },
+      sourceSide: effSourceSide,
+      targetSide: effTargetSide,
+      checkPoints: saved,
+    }));
+    if (!sameCheckList(converted, saved)) data?.onRouteConvert?.(data.refKey, converted);
+  }, [effSourceSide, effTargetSide]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Commit the final route as the merged interior corner list. Merge collapses
   // any jog a slide brought into alignment (D4); the same corners are what the
@@ -304,6 +331,33 @@ const CustomEdge = ({
     window.addEventListener('pointerup', end);
   };
 
+  // Drag an endpoint across its table to force the side the line leaves from.
+  const beginEndpointDrag = (e, endpoint) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setIsDragging(true);
+
+    const move = (ev) => {
+      const fp = screenToFlowPosition({ x: ev.clientX, y: ev.clientY });
+      data?.onEndpointDrag?.(data.refKey, endpoint, fp, false);
+    };
+    const end = (ev) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      cleanupRef.current = null;
+      const fp = screenToFlowPosition({ x: ev.clientX, y: ev.clientY });
+      data?.onEndpointDrag?.(data.refKey, endpoint, fp, true);
+      setIsDragging(false);
+    };
+
+    cleanupRef.current = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+  };
+
   // A hard point sits at the midpoint of an interior segment; dragging it slides
   // that whole segment along its perpendicular axis (never free 2D).
   const dotStyle = {
@@ -334,6 +388,42 @@ const CustomEdge = ({
   };
   // The endpoint side handle is a square, so it can never be mistaken for a
   // round segment handle: squares mark the two ends, circles mark the bends.
+  const endpointStyle = {
+    position: 'absolute',
+    width: 13,
+    height: 13,
+    borderRadius: 3,
+    background: '#ffffff',
+    border: `2.5px solid ${strokeColor}`,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
+    cursor: 'ew-resize',
+    pointerEvents: 'all',
+    zIndex: 1004,
+  };
+  // The reset control sits above the source endpoint, clear of every drag
+  // handle so it can never be hit mid-edit (D6). Its class is on the export
+  // hide-list so it never appears in an exported PNG/SVG.
+  const resetStyle = {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderRadius: '50%',
+    background: '#ffffff',
+    color: strokeColor,
+    border: `1.5px solid ${strokeColor}`,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.35)',
+    fontSize: 12,
+    lineHeight: '16px',
+    fontWeight: 700,
+    textAlign: 'center',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    pointerEvents: 'all',
+    zIndex: 1006,
+  };
+
   const showSymbols = data?.showMarkers !== false && !!geometry;
   const showLabels = !!data?.showCardinalityLabels && !!geometry;
   const labelStyle = {
@@ -380,6 +470,19 @@ const CustomEdge = ({
 
           {editing && (
             <>
+              <div
+                className="nodrag nopan dbml-endpoint-handle"
+                title="Drag across the table to choose which side this end leaves from"
+                style={{ ...endpointStyle, transform: `translate(-50%, -50%) translate(${sourceX}px, ${sourceY}px)` }}
+                onPointerDown={(e) => beginEndpointDrag(e, 'source')}
+              />
+              <div
+                className="nodrag nopan dbml-endpoint-handle"
+                title="Drag across the table to choose which side this end arrives at"
+                style={{ ...endpointStyle, transform: `translate(-50%, -50%) translate(${targetX}px, ${targetY}px)` }}
+                onPointerDown={(e) => beginEndpointDrag(e, 'target')}
+              />
+
               {movableSegments.map((seg) => (
                 <div
                   key={`seg-${seg.index}`}
