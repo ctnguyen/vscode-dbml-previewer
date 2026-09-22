@@ -1,6 +1,7 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const { parseLayoutFile, resolvePendingEdges } = require('./src/layout/layoutFile');
 
 // Track the active preview panel
 let activePreviewPanel = null;
@@ -13,19 +14,16 @@ function readLayoutFile(dbmlFilePath) {
 	try {
 		const layoutPath = getLayoutFilePath(dbmlFilePath);
 		if (!fs.existsSync(layoutPath)) return null;
-		const parsed = JSON.parse(fs.readFileSync(layoutPath, 'utf8'));
-		if (parsed?.version === 1 && parsed.positions && typeof parsed.positions === 'object') {
-			return parsed.positions;
-		}
-		return null;
+		return parseLayoutFile(fs.readFileSync(layoutPath, 'utf8'));
 	} catch { return null; }
 }
 
-function writeLayoutFile(dbmlFilePath, positions) {
+function writeLayoutFile(dbmlFilePath, positions, edges) {
 	try {
+		const payload = { version: 1, positions, ...(edges && Object.keys(edges).length ? { edges } : {}) };
 		fs.writeFileSync(
 			getLayoutFilePath(dbmlFilePath),
-			JSON.stringify({ version: 1, positions }, null, 2),
+			JSON.stringify(payload, null, 2),
 			'utf8'
 		);
 	} catch (e) { console.warn('Failed to write layout file:', e.message); }
@@ -202,17 +200,22 @@ function createPreviewPanel(context, filePath, content) {
 	const exportPadding = config.get('exportPadding', 20);
 
 	// Read persisted layout for this file; create the file immediately if it doesn't exist yet
-	const initialLayout = readLayoutFile(currentFilePath);
+	const persisted = readLayoutFile(currentFilePath);
+	const initialLayout = persisted ? persisted.positions : null;
+	const initialEdgeRoutes = persisted ? persisted.edges : null;
 	if (!fs.existsSync(getLayoutFilePath(currentFilePath))) {
 		writeLayoutFile(currentFilePath, {});
 	}
 
 	// Set the webview content
-	panel.webview.html = getWebviewContent(content, fileName, currentFilePath, panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide, initialLayout);
+	panel.webview.html = getWebviewContent(content, fileName, currentFilePath, panel.webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide, initialLayout, initialEdgeRoutes);
 
-	// Debounce state for layout file writes
+	// Debounce state for layout file writes. pendingEdges starts from the routes
+	// already persisted in the sidecar, so the first positions-only save (a plain
+	// table drag, which omits the edges field) cannot wipe the saved routes.
 	let layoutSaveTimer = null;
 	let pendingPositions = null;
+	let pendingEdges = initialEdgeRoutes;
 
 	// Handle messages from the webview
 	panel.webview.onDidReceiveMessage(
@@ -244,9 +247,12 @@ function createPreviewPanel(context, filePath, content) {
 					break;
 				case 'saveLayout':
 					pendingPositions = message.positions;
+					// Treat an omitted edges field as "unchanged" so a positions-only
+					// save never wipes previously-persisted routes.
+					pendingEdges = resolvePendingEdges(pendingEdges, message.edges);
 					clearTimeout(layoutSaveTimer);
 					layoutSaveTimer = setTimeout(() => {
-						writeLayoutFile(currentFilePath, message.positions);
+						writeLayoutFile(currentFilePath, pendingPositions, pendingEdges);
 						layoutSaveTimer = null;
 					}, 500);
 					break;
@@ -254,6 +260,7 @@ function createPreviewPanel(context, filePath, content) {
 					clearTimeout(layoutSaveTimer);
 					layoutSaveTimer = null;
 					pendingPositions = null;
+					pendingEdges = null;
 					deleteLayoutFile(currentFilePath);
 					break;
 			}
@@ -323,7 +330,7 @@ function createPreviewPanel(context, filePath, content) {
 		fileWatcher.dispose();
 		clearTimeout(layoutSaveTimer);
 		if (pendingPositions) {
-			writeLayoutFile(currentFilePath, pendingPositions);
+			writeLayoutFile(currentFilePath, pendingPositions, pendingEdges);
 		}
 		// Clear active panel reference
 		if (activePreviewPanel === panel) {
@@ -350,7 +357,7 @@ function createPreviewPanel(context, filePath, content) {
  * @param {Object|null} initialLayout
  * @returns {string}
  */
-function getWebviewContent(content, fileName, filePath, webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide = true, initialLayout = null) {
+function getWebviewContent(content, fileName, filePath, webview, inheritThemeStyle, edgeType, showCardinalityLabels, exportQuality, exportBackground, exportPadding, autoEndpointSide = true, initialLayout = null, initialEdgeRoutes = null) {
 	// Get the local path to main script run in the webview
 	const scriptPathOnDisk = vscode.Uri.file(path.join(__dirname, 'dist', 'webview.js'));
 	const scriptUri = webview.asWebviewUri(scriptPathOnDisk);
@@ -391,6 +398,7 @@ function getWebviewContent(content, fileName, filePath, webview, inheritThemeSty
 			window.exportBackground = ${JSON.stringify(exportBackground)};
 			window.exportPadding = ${JSON.stringify(exportPadding)};
 			window.initialLayout = ${JSON.stringify(initialLayout)};
+			window.initialEdgeRoutes = ${JSON.stringify(initialEdgeRoutes)};
 		</script>
 		<script src="${scriptUri}"></script>
 	</body>

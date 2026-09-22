@@ -36,7 +36,10 @@ import {
   extractTablePositions,
   cleanupObsoletePositions,
   applyPersistedLayout,
+  cleanupObsoleteEdgeRoutes,
+  translateEdgeRoutesForMove,
 } from '../utils/layoutStorage';
+import { currentRefKeysFromEdges } from '../utils/refIdentity';
 import { darkenHexColor } from '../utils/colorUtils';
 import CustomEdge from './CustomEdge';
 
@@ -50,6 +53,36 @@ const nodeTypes = {
 
 const edgeTypes = {
   custom: CustomEdge,
+};
+
+// An edge "has a route" if it carries waypoints or an explicit side override;
+// such edges are kept above tables (z 11) even when not selected.
+const edgeHasRoute = (edge) => {
+  const d = edge?.data || {};
+  return (Array.isArray(d.checkPoints) && d.checkPoints.length > 0)
+    || d.sourceSide === 'left' || d.sourceSide === 'right'
+    || d.targetSide === 'left' || d.targetSide === 'right';
+};
+
+// Compare two route maps by key set and each entry's side overrides and
+// checkpoint list (length + per-point x/y). Used to skip no-op route updates.
+const shallowEqualRoutes = (a, b) => {
+  const ak = Object.keys(a || {});
+  const bk = Object.keys(b || {});
+  if (ak.length !== bk.length) return false;
+  for (const k of ak) {
+    const ra = a[k];
+    const rb = b[k];
+    if (!rb) return false;
+    if (ra.sourceSide !== rb.sourceSide || ra.targetSide !== rb.targetSide) return false;
+    const ca = ra.checkPoints || [];
+    const cb = rb.checkPoints || [];
+    if (ca.length !== cb.length) return false;
+    for (let i = 0; i < ca.length; i++) {
+      if (ca[i].x !== cb[i].x || ca[i].y !== cb[i].y) return false;
+    }
+  }
+  return true;
 };
 
 // Component that handles table navigation within React Flow context
@@ -138,7 +171,14 @@ const DBMLPreview = ({ initialContent }) => {
   const [draggedGroupPositions, setDraggedGroupPositions] = useState(new Map());
   const [fileId, setFileId] = useState(null);
   const [savedPositions, setSavedPositions] = useState({});
+  const [savedEdgeRoutes, setSavedEdgeRoutes] = useState({});
   const [, setFilePath] = useState(null);
+
+  // Refs mirroring live state so persistence can read the latest values
+  // synchronously without racing pending setNodes/setEdges/setSavedEdgeRoutes.
+  const nodesRef = useRef([]);
+  const edgesRef = useRef([]);
+  const routesRef = useRef({});
   const [currentTheme, setCurrentTheme] = useState({});
   const [inheritThemeStyle, setInheritThemeStyle] = useState(true);
   const [edgeType, setEdgeType] = useState('smoothstep');
@@ -152,6 +192,26 @@ const DBMLPreview = ({ initialContent }) => {
 
   // Ref to the React Flow instance — used to call fitView() imperatively during bulk export
   const reactFlowRef = useRef(null);
+
+  // Keep nodesRef/edgesRef in sync with the latest state for synchronous snapshot reads.
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  useEffect(() => { edgesRef.current = edges; }, [edges]);
+
+  // Single route setter: keeps routesRef current synchronously (before the state
+  // update) and skips no-op re-renders so the rebuild effect cannot loop.
+  const setRoutes = useCallback((next) => {
+    if (shallowEqualRoutes(routesRef.current, next)) return;
+    routesRef.current = next;
+    setSavedEdgeRoutes(next);
+  }, []);
+
+  // Pure poster: sessionStorage stays positions-only; the sidecar file is the
+  // source of truth for routes. Always sends edges so the host can persist them.
+  const postLayoutSnapshot = useCallback(({ positions, routes }) => {
+    if (!fileId) return;
+    saveLayout(fileId, positions);
+    window.vscode.postMessage({ type: 'saveLayout', positions, edges: routes });
+  }, [fileId]);
 
   // Export handlers
   const handleExportToPng = useCallback(async () => {
@@ -806,6 +866,12 @@ const DBMLPreview = ({ initialContent }) => {
         const positions = loadLayout(newFileId);
         setSavedPositions(positions);
       }
+
+      // Saved edge routes come from the sidecar file only (not sessionStorage).
+      if (window.initialEdgeRoutes && typeof window.initialEdgeRoutes === 'object') {
+        routesRef.current = window.initialEdgeRoutes;
+        setSavedEdgeRoutes(window.initialEdgeRoutes);
+      }
     }
   }, []);
 
@@ -978,15 +1044,30 @@ const DBMLPreview = ({ initialContent }) => {
 
         const allCurrentIds = [...tableHeaderIds, ...stickyNoteIds];
         const cleanedPositions = cleanupObsoletePositions(currentSavedPositions, allCurrentIds);
-        if (Object.keys(cleanedPositions).length !== Object.keys(currentSavedPositions).length) {
-          setSavedPositions(cleanedPositions);
+        const positionsChanged = Object.keys(cleanedPositions).length !== Object.keys(currentSavedPositions).length;
+
+        // Transform from the newly-cleaned positions and the current routes.
+        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, cleanedPositions, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide, routesRef.current);
+
+        // Drop routes whose refKey no longer exists in the freshly built edges.
+        const currentRefKeys = currentRefKeysFromEdges(newEdges);
+        const cleanedRoutes = cleanupObsoleteEdgeRoutes(routesRef.current, currentRefKeys);
+        const routesChanged = !shallowEqualRoutes(routesRef.current, cleanedRoutes);
+
+        setSavedPositions(cleanedPositions);
+        if (positionsChanged) {
           saveLayout(fileId, cleanedPositions);
         }
-
-        const { nodes: newNodes, edges: newEdges, tableGroups: newTableGroups } = transformDBMLToNodes(dbmlData, cleanedPositions, handleColumnClick, handleTableNoteClick, edgeType, tableChecks, handleTableChecksClick, showCardinalityLabels, handleTableIndexesClick, autoEndpointSide);
+        setRoutes(cleanedRoutes);
         setNodes(newNodes);
         setEdges(newEdges);
         setTableGroups(newTableGroups || []);
+
+        // Persist only when something actually changed. Posted routes come from
+        // newEdges, so cleanup can never be undone by re-extracting old edges.
+        if (positionsChanged || routesChanged) {
+          postLayoutSnapshot({ positions: cleanedPositions, routes: routesRef.current });
+        }
       } catch (error) {
         console.error('Error transforming DBML data:', error);
       }
@@ -1011,7 +1092,7 @@ const DBMLPreview = ({ initialContent }) => {
         const expectedStrokeWidth = isSelected ? 3 : 2;
         const expectedDashArray = isSelected ? '5 5' : '0';
         const expectedAnimated = isSelected;
-        const expectedZIndex = isSelected ? 1001 : 0;
+        const expectedZIndex = isSelected ? 1001 : (edgeHasRoute(edge) ? 11 : 0);
 
         // Only update if the style has actually changed
         if (currentStroke !== expectedStroke || currentStrokeWidth !== expectedStrokeWidth || currentDashArray !== expectedDashArray || currentAnimated !== expectedAnimated || currentZIndex !== expectedZIndex || currentDataSelected !== isSelected) {

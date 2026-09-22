@@ -1,6 +1,8 @@
 import dagre from 'dagre';
 import { getThemeVar } from '../styles/themeManager.js';
 import { parseHeaderColor, darkenHexColor } from './colorUtils.js';
+import { refBaseKey, refKey, makeOccurrenceCounter } from './refIdentity.js';
+import { applySavedRoute } from './layoutStorage.js';
 
 /**
  * Calculate the width needed for a column based on its content
@@ -266,7 +268,7 @@ const analyzeColumnRelationships = (refs, tables, hasMultipleSchema) => {
   return columnHandles;
 };
 
-export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClick = null, onTableNoteClick = null, edgeType = 'smoothstep', tableChecks = {}, onTableChecksClick = null, showCardinalityLabels = false, onTableIndexesClick = null, autoEndpointSide = true) => {
+export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClick = null, onTableNoteClick = null, edgeType = 'smoothstep', tableChecks = {}, onTableChecksClick = null, showCardinalityLabels = false, onTableIndexesClick = null, autoEndpointSide = true, savedEdgeRoutes = {}) => {
   if (!dbmlData?.schemas || dbmlData.schemas.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -497,6 +499,10 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
   // Create edges for relationships connecting column nodes directly from DBML refs
   const edges = [];
 
+  // Deterministic per-Ref occurrence counter, so byte-identical duplicate Refs
+  // get distinct stable keys (best-effort ordinal, called once per Ref).
+  const nextOccurrence = makeOccurrenceCounter();
+
   refs.forEach((ref, index) => {
     if (ref.endpoints && ref.endpoints.length >= 2) {
       const [sourceEndpoint, targetEndpoint] = mapSourceAndTarget(ref)
@@ -504,6 +510,21 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
       // Use fieldNames arrays from actual DBML refs
       const sourceFieldNames = sourceEndpoint.fieldNames || [];
       const targetFieldNames = targetEndpoint.fieldNames || [];
+
+      // Stable base identity for the whole Ref: raw schema/table (schema always
+      // present) plus the COMPLETE ordered field arrays for both endpoints. The
+      // occurrence counter is consulted exactly once per Ref.
+      const refBaseArgs = {
+        srcSchema: sourceEndpoint.schemaName,
+        srcTable: sourceEndpoint.tableName,
+        srcFields: sourceFieldNames,
+        tgtSchema: targetEndpoint.schemaName,
+        tgtTable: targetEndpoint.tableName,
+        tgtFields: targetFieldNames,
+      };
+      const bareBase = refBaseKey(refBaseArgs);
+      const occ = nextOccurrence(bareBase);
+      const base = refBaseKey({ ...refBaseArgs, occurrence: occ });
 
       // Create edges for each field pair
       sourceFieldNames.forEach((sourceField, fieldIndex) => {
@@ -537,6 +558,21 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
           const refColor = parseHeaderColor(ref.color);
           const edgeStroke = refColor ? darkenHexColor(refColor) : getThemeVar('chartsLines');
 
+          // Per-rendered-line identity, and any saved route for this line.
+          const lineRefKey = refKey(base, sourceField, targetField);
+          const savedRoute = savedEdgeRoutes ? savedEdgeRoutes[lineRefKey] : undefined;
+          // Escape hatch: only apply a saved route when both endpoints still
+          // resolve to real columns; drop any non-finite checkpoint.
+          const endpointsResolve = !!sourceColumn && !!targetColumn;
+          const {
+            sourceSide: seededSourceSide,
+            targetSide: seededTargetSide,
+            checkPoints: seededCheckPoints,
+          } = applySavedRoute(savedRoute, endpointsResolve);
+
+          // A routed edge (side override or waypoints) sits above tables (z 11).
+          const routed = !!(seededSourceSide || seededTargetSide || (seededCheckPoints && seededCheckPoints.length));
+
           edges.push({
             id: `${sourceTable}.${sourceField}-${targetTable}.${targetField}-${index}-${fieldIndex}`,
             source: `${sourceTable}.${sourceField}`,
@@ -544,6 +580,7 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
             type: 'custom',
             animated: false,
             selectable: true,
+            zIndex: routed ? 11 : undefined,
             style: {
               stroke: edgeStroke,
               strokeWidth: 2,
@@ -563,6 +600,10 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
               refColor,
               pathStyle: edgeType,
               showCardinalityLabels,
+              refKey: lineRefKey,
+              sourceSide: seededSourceSide,
+              targetSide: seededTargetSide,
+              checkPoints: seededCheckPoints,
             }
           });
         }
