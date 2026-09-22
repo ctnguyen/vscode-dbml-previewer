@@ -22,6 +22,13 @@ import {
 // router: every edge is drawn by the segment router regardless.
 const cornerRadiusFor = (pathStyle) => (pathStyle === 'straight' ? 0 : 8);
 
+// How far along the path the relationship symbols sit. Far enough from the
+// endpoint that the table node never covers them, close enough to read as
+// belonging to that end.
+const SYMBOL_INSET = 24;
+// Optional cardinality text sits further in than the symbols, so the two never
+// collide when a user turns the labels on.
+const LABEL_INSET = 52;
 // Pointer travel (screen px) below which a press-release counts as a click, not
 // a drag. A zero-movement press never mutates the route.
 const DRAG_SLOP = 4;
@@ -36,6 +43,33 @@ const HARD_POINT_RADIUS = 18;  // screen px
 // midpoint. Far enough not to collide with the segment's hard point, close
 // enough to read as belonging to this edge.
 const RESET_OFFSET = 30;       // screen px
+
+// Relationship symbols, drawn in a 20x20 box whose +x axis points OUTWARD along
+// the path (towards the nearer endpoint). "many" is a crow's foot opening
+// outward; "one" is a single bar across the line.
+const SYMBOL_PATHS = {
+  many: ['M4,10 L17,3', 'M4,10 L17,10', 'M4,10 L17,17'],
+  one: ['M10,3 L10,17'],
+};
+
+const RelationshipSymbol = ({ kind, x, y, angle, color }) => (
+  <div
+    className="nodrag nopan dbml-edge-symbol"
+    style={{
+      position: 'absolute',
+      transform: `translate(-50%, -50%) translate(${x}px, ${y}px) rotate(${angle}deg)`,
+      pointerEvents: 'none',
+      lineHeight: 0,
+      zIndex: 1002,
+    }}
+  >
+    <svg width="20" height="20" viewBox="0 0 20 20">
+      {SYMBOL_PATHS[kind].map((d, i) => (
+        <path key={i} d={d} stroke={color} strokeWidth="2" strokeLinecap="round" fill="none" />
+      ))}
+    </svg>
+  </div>
+);
 
 const CustomEdge = ({
   id,
@@ -108,8 +142,14 @@ const CustomEdge = ({
     if (!Number.isFinite(L) || L <= 0) { setGeometry(null); return; }
 
     const at = (len) => el.getPointAtLength(Math.max(0, Math.min(L, len)));
+    const inset = Math.min(SYMBOL_INSET, L / 2);
+    const angleBetween = (from, to) => (Math.atan2(to.y - from.y, to.x - from.x) * 180) / Math.PI;
+    const startAnchor = at(inset);
+    const endAnchor = at(L - inset);
 
     setGeometry({
+      start: { x: startAnchor.x, y: startAnchor.y, angle: angleBetween(startAnchor, at(0)) },
+      end: { x: endAnchor.x, y: endAnchor.y, angle: angleBetween(endAnchor, at(L)) },
       // Midpoint of the drawn path plus its perpendicular normal, used to park
       // the reset control beside the middle of the line where it is actually
       // noticed — at an endpoint it sits against the table and gets missed.
@@ -119,6 +159,11 @@ const CustomEdge = ({
         const ang = Math.atan2(m2.y - m.y, m2.x - m.x);
         const off = RESET_OFFSET / (zoomRef.current || 1);
         return { x: m.x + Math.sin(ang) * off, y: m.y - Math.cos(ang) * off };
+      })(),
+      labels: (() => {
+        const li = Math.min(LABEL_INSET, L * 0.35);
+        const a = at(li), b = at(L - li);
+        return { start: { x: a.x, y: a.y }, end: { x: b.x, y: b.y } };
       })(),
     });
   }, [edgePath, sourceX, sourceY, targetX, targetY, zoom]);
@@ -289,30 +334,23 @@ const CustomEdge = ({
   };
   // The endpoint side handle is a square, so it can never be mistaken for a
   // round segment handle: squares mark the two ends, circles mark the bends.
-  // Position labels ~35% from each endpoint along the straight line
-  const startLabelX = targetX + (sourceX - targetX) * 0.65;
-  const startLabelY = targetY + (sourceY - targetY) * 0.65;
-  const endLabelX = targetX + (sourceX - targetX) * 0.35;
-  const endLabelY = targetY + (sourceY - targetY) * 0.35;
-
-  const sourceLabel = data?.sourceRelation === '*' ? 'N' : (data?.sourceIsNullable ? '0' : '1');
-  const targetLabel = data?.targetRelation === '*' ? 'N' : (data?.targetIsNullable ? '0' : '1');
-
-  const labelColor = data?.refColor || style?.stroke;
-
+  const showSymbols = data?.showMarkers !== false && !!geometry;
+  const showLabels = !!data?.showCardinalityLabels && !!geometry;
   const labelStyle = {
     position: 'absolute',
     fontSize: 11,
     fontWeight: 700,
     fontFamily: 'monospace',
     color: '#ffffff',
-    background: labelColor,
+    background: strokeColor,
     borderRadius: 4,
     padding: '1px 5px',
     lineHeight: '14px',
     pointerEvents: 'none',
-    zIndex: data?.isSelected ? 1002 : 1,
+    zIndex: 1002,
   };
+  const sourceKind = data?.sourceRelation === '*' ? 'many' : 'one';
+  const targetKind = data?.targetRelation === '*' ? 'many' : 'one';
 
   const movableSegments = segments.filter((s) => s.movable);
 
@@ -320,31 +358,27 @@ const CustomEdge = ({
     <>
       <BaseEdge id={id} path={edgePath} style={style} />
 
-      {data?.showCardinalityLabels && (
+      {(showSymbols || showLabels || editing) && (
         <EdgeLabelRenderer>
-          <div
-            style={{
-              transform: `translate(-50%, -50%) translate(${startLabelX}px, ${startLabelY}px)`,
-              ...labelStyle,
-            }}
-            className="nodrag nopan"
-          >
-            {sourceLabel}
-          </div>
-          <div
-            style={{
-              transform: `translate(-50%, -50%) translate(${endLabelX}px, ${endLabelY}px)`,
-              ...labelStyle,
-            }}
-            className="nodrag nopan"
-          >
-            {targetLabel}
-          </div>
-        </EdgeLabelRenderer>
-      )}
+          {showSymbols && (
+            <>
+              <RelationshipSymbol kind={sourceKind} x={geometry.start.x} y={geometry.start.y} angle={geometry.start.angle} color={strokeColor} />
+              <RelationshipSymbol kind={targetKind} x={geometry.end.x} y={geometry.end.y} angle={geometry.end.angle} color={strokeColor} />
+            </>
+          )}
 
-      {editing && (
-        <EdgeLabelRenderer>
+          {showLabels && (
+            <>
+              <div className="nodrag nopan" style={{ ...labelStyle, transform: `translate(-50%, -50%) translate(${geometry.labels.start.x}px, ${geometry.labels.start.y}px)` }}>
+                {data?.sourceRelation === '*' ? '*' : '1'}
+              </div>
+              <div className="nodrag nopan" style={{ ...labelStyle, transform: `translate(-50%, -50%) translate(${geometry.labels.end.x}px, ${geometry.labels.end.y}px)` }}>
+                {data?.targetRelation === '*' ? '*' : '1'}
+              </div>
+            </>
+          )}
+
+          {editing && (
             <>
               {movableSegments.map((seg) => (
                 <div
@@ -378,6 +412,7 @@ const CustomEdge = ({
                 ⟳
               </div>
             </>
+          )}
         </EdgeLabelRenderer>
       )}
     </>

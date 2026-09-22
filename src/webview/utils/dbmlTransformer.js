@@ -268,7 +268,7 @@ const analyzeColumnRelationships = (refs, tables, hasMultipleSchema) => {
   return columnHandles;
 };
 
-export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClick = null, onTableNoteClick = null, edgeType = 'smoothstep', tableChecks = {}, onTableChecksClick = null, showCardinalityLabels = false, onTableIndexesClick = null, autoEndpointSide = true, savedEdgeRoutes = {}, onRouteChange = null, onRouteCommit = null, editableEdgeRouting = false, onResetEdge = null) => {
+export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClick = null, onTableNoteClick = null, edgeType = 'smoothstep', tableChecks = {}, onTableChecksClick = null, showCardinalityLabels = false, onTableIndexesClick = null, autoEndpointSide = true, relationshipMarkers = true, savedEdgeRoutes = {}, onRouteChange = null, onRouteCommit = null, editableEdgeRouting = false, onResetEdge = null) => {
   if (!dbmlData?.schemas || dbmlData.schemas.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -558,6 +558,9 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
           const refColor = parseHeaderColor(ref.color);
           const edgeStroke = refColor ? darkenHexColor(refColor) : getThemeVar('chartsLines');
 
+          // Relationship markers: crow's-foot on a many ('*') end, bar on a one
+          // ('1') end. Bare ids only; React Flow resolves them to url('#id').
+
           // Per-rendered-line identity, and any saved route for this line.
           const lineRefKey = refKey(base, sourceField, targetField);
           const savedRoute = savedEdgeRoutes ? savedEdgeRoutes[lineRefKey] : undefined;
@@ -605,6 +608,7 @@ export const transformDBMLToNodes = (dbmlData, savedPositions = {}, onColumnClic
               targetSide: seededTargetSide,
               checkPoints: seededCheckPoints,
               isEditable: editableEdgeRouting,
+              showMarkers: relationshipMarkers,
               onRouteChange,
               onRouteCommit,
               onResetEdge,
